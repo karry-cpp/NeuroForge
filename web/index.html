@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NeuroForge — interactive 3-D neuroscience simulation</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%2338e0ff' stroke-width='2.5'/%3E%3Cpath d='M16 4v24M8 10c5 3 5 9 0 12M24 10c-5 3-5 9 0 12' fill='none' stroke='%2338e0ff' stroke-width='2'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/static/css/app.css" />
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<!-- ============================ 3-D VIEWPORT ============================ -->
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <div id="vignette"></div>
+  <div id="pinLayer"></div>
+  <div id="hoverTip" class="hidden"></div>
+</div>
+
+<!-- ============================== LOADER =============================== -->
+<div id="loader">
+  <div class="loader-inner">
+    <div class="loader-mark">
+      <svg viewBox="0 0 100 100" width="76" height="76">
+        <circle cx="50" cy="50" r="34" fill="none" stroke="#1d3a52"
+                stroke-width="1.5"/>
+        <circle cx="50" cy="50" r="34" fill="none" stroke="#38e0ff"
+                stroke-width="1.5" stroke-linecap="round"
+                stroke-dasharray="40 174" class="spin"/>
+        <circle cx="50" cy="50" r="21" fill="none" stroke="#1d3a52"
+                stroke-width="1"/>
+      </svg>
+    </div>
+    <h1>NEUROFORGE</h1>
+    <p id="loaderMsg">generating cortical surface…</p>
+    <div class="loader-bar"><i id="loaderBar"></i></div>
+  </div>
+</div>
+
+<!-- ============================== TOP BAR ============================== -->
+<header id="topbar">
+  <div class="brand">
+    <span class="logo">NEUROFORGE</span>
+    <span class="sep"></span>
+    <span class="daybox"><b id="dayNum">0</b><i>day</i></span>
+    <span class="daybox"><b id="practiceNum">0</b><i>practices</i></span>
+    <span class="daybox"><b id="streakNum">0</b><i>streak</i></span>
+  </div>
+
+  <div class="metric" id="metricWrap" title="Similarity between the simulated
+current state and your chosen target state. A model value.">
+    <div class="metric-label">CURRENT → TARGET</div>
+    <div class="metric-bar"><i id="alignBar"></i></div>
+    <div class="metric-val"><b id="alignVal">—</b></div>
+  </div>
+
+  <div class="topright">
+    <button class="ghost" id="btnHonesty" title="What this app is and is not">
+      Scientific integrity
+    </button>
+    <button class="ghost" id="btnMenu" title="Session">⋯</button>
+  </div>
+</header>
+
+<!-- =========================== DISCLOSURE STRIP ========================= -->
+<div id="strip">
+  <span class="dot"></span>
+  Educational simulation. Glowing pathways visualise <b>simulated pathway
+  strength</b> — a number in this program — not measurements of your neurons,
+  synapses, gray matter or brain activity.
+  <button id="stripHide">dismiss</button>
+</div>
+
+<!-- ============================ LEFT DOCK ============================== -->
+<aside id="leftdock">
+  <div class="dockgroup">
+    <div class="docktitle">View</div>
+    <button data-view="lateral"  class="viewbtn active">Lateral</button>
+    <button data-view="medial"   class="viewbtn">Medial</button>
+    <button data-view="superior" class="viewbtn">Superior</button>
+    <button data-view="inferior" class="viewbtn">Inferior</button>
+    <button data-view="anterior" class="viewbtn">Anterior</button>
+    <button data-view="posterior" class="viewbtn">Posterior</button>
+  </div>
+
+  <div class="dockgroup">
+    <div class="docktitle">Hemisphere</div>
+    <div class="segmented" id="hemiSeg">
+      <button data-hemi="both" class="active">Both</button>
+      <button data-hemi="L">L</button>
+      <button data-hemi="R">R</button>
+    </div>
+    <label class="check"><input type="checkbox" id="chkXray"> Cortex x-ray</label>
+    <label class="check"><input type="checkbox" id="chkSubcort" checked>
+      Subcortical</label>
+    <label class="check"><input type="checkbox" id="chkLabels" checked>
+      Labels</label>
+    <label class="check"><input type="checkbox" id="chkSpin"> Auto-rotate</label>
+  </div>
+
+  <div class="dockgroup" id="groupList">
+    <div class="docktitle">Systems</div>
+    <!-- injected -->
+  </div>
+
+  <div class="dockgroup" id="netGroup">
+    <div class="docktitle">Networks</div>
+    <label class="check"><input type="checkbox" id="chkNetworks">
+      Functional networks</label>
+    <div id="netList" class="hidden"><!-- injected --></div>
+  </div>
+
+  <div class="dockgroup" id="structList">
+    <div class="docktitle">Structures</div>
+    <!-- injected -->
+  </div>
+</aside>
+
+<!-- =========================== MODE SWITCHER =========================== -->
+<nav id="modebar">
+  <button data-mode="anatomy" class="active"><b>Anatomy</b></button>
+  <button data-mode="circuits"><b>Circuits</b></button>
+  <button data-mode="simulation"><b>Simulation</b></button>
+</nav>
+
+<!-- ============================ STATE TOGGLE =========================== -->
+<div id="statebar" class="hidden">
+  <div class="segmented big" id="stateSeg">
+    <button data-state="current" class="active">Current</button>
+    <button data-state="target">Target</button>
+    <button data-state="compare">Compare</button>
+  </div>
+  <div id="stateHint">simulated strengths from your logged practice</div>
+</div>
+
+<!-- ============================== ACTIONS ============================== -->
+<div id="actionbar">
+  <button id="btnTrigger" class="primary">Log an experience</button>
+  <button id="btnChat" class="secondary">Ask</button>
+  <button id="btnTimeline" class="secondary hidden">Timeline</button>
+</div>
+
+<!-- ============================= TIMELINE ============================== -->
+<div id="timeline" class="hidden">
+  <div class="tl-head">
+    <span class="tl-title">Simulated evolution</span>
+    <span class="tl-day" id="tlDay">day 0</span>
+    <div class="tl-ctl">
+      <button id="tlPlay">Replay</button>
+      <button id="tlLive" class="active">Live</button>
+      <button id="tlDay1">+1d</button>
+      <button id="tlWeek">+1w</button>
+      <button id="tlMonth">+1m</button>
+    </div>
+  </div>
+  <canvas id="tlCanvas"></canvas>
+  <div class="tl-scale" id="tlScale"></div>
+
+  <!-- Comparison: what actually changed between two days -->
+  <div class="tl-compare">
+    <span class="cmp-label">Compare</span>
+    <select id="cmpFrom" class="cmp-sel"></select>
+    <span class="cmp-arrow">&rarr;</span>
+    <select id="cmpTo" class="cmp-sel"></select>
+    <button id="cmpGo">Show change</button>
+    <button id="cmpOff" class="hidden">Back to live</button>
+    <span id="cmpLegend" class="cmp-legend hidden">
+      <i class="up"></i> stronger
+      <i class="down"></i> weaker
+    </span>
+  </div>
+</div>
+
+<!-- =========================== CONTEXT PANEL =========================== -->
+<aside id="panel" class="hidden">
+  <button id="panelClose">&#215;</button>
+  <div id="panelBody"></div>
+</aside>
+
+<!-- ============================= CHAT PANEL ============================ -->
+<aside id="chat" class="hidden">
+  <header class="chat-head">
+    <div class="chat-title">
+      Assistant
+      <span id="chatStatus" class="chat-status">checking&hellip;</span>
+    </div>
+    <button id="chatClose" title="Close">&#215;</button>
+  </header>
+
+  <div id="chatBody" class="chat-body"></div>
+
+  <div class="chat-foot">
+    <div class="segmented small" id="chatSeg">
+      <button data-mode="ask" class="active">Ask</button>
+      <button data-mode="log">Log</button>
+    </div>
+    <div class="chat-compose">
+      <textarea id="chatInput" rows="1"
+        placeholder="Ask about a region, a pathway, or what changed&hellip;"></textarea>
+      <button id="chatSend">Send</button>
+    </div>
+    <p class="chat-legal">
+      Explains this simulation. It cannot read your brain, and it cannot
+      change anything without your confirmation.
+    </p>
+  </div>
+</aside>
+
+<!-- ============================== MODALS =============================== -->
+<div id="modalWrap" class="hidden">
+  <div id="modal"><button id="modalClose">✕</button><div id="modalBody"></div></div>
+</div>
+
+<!-- ============================== TOASTS =============================== -->
+<div id="toasts"></div>
+
+<script type="module" src="/static/js/main.js"></script>
+<noscript><p style="color:#fff;padding:2rem">
+  NeuroForge requires JavaScript and a WebGL2-capable browser.
+</p></noscript>
+</body>
+</html>

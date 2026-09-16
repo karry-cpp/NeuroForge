@@ -1,0 +1,31 @@
+# Generated scene caches - rebuilt automatically on first run.
+neuroforge/_cache/
+
+# Anatomical template data (FreeSurfer fsaverage surfaces and the aseg
+# segmentation of MNI152, both via TemplateFlow).
+# Deliberately NOT committed: it is licensed by FreeSurfer and should be
+# obtained from the original source. Run:
+#     python -m neuroforge.anatomy.fetch
+neuroforge/_assets/
+
+# Test artefacts
+*.png
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Saved sessions
+*.session.json
+
+# Local scratch
+nf_*.png
+scripts/node_modules/
+
+# Upload staging folder
+_upload/
