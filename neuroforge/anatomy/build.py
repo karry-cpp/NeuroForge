@@ -34,7 +34,11 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(
 #     instead of being procedural blobs, plus ventricles and ventral DC.
 # v8: insula (anterior/posterior) and medial PFC added; dACC and sgACC given
 #     cortical region entries; composite groupings published.
-SCENE_VERSION = 9
+# v9: chat/assistant grounding.
+# v10: measured per-hemisphere centroids published for cortical regions, so
+#      the sidebar can aim the camera at a surface parcel the way it already
+#      does at a subcortical structure.
+SCENE_VERSION = 10
 
 
 # --------------------------------------------------------------------------
@@ -204,9 +208,34 @@ def build_scene(subdivisions: int = 6, verbose: bool = True) -> Dict[str, Any]:
         if m.labels:
             present.update(m.labels)
 
+    # Mean vertex position per label, kept per hemisphere. Averaging the two
+    # sides together would put every bilateral region on the midline, which
+    # is the one place a lateral region is not.
+    acc: Dict[int, Dict[int, List[float]]] = {}
+    for side, m in ((0, left), (1, right)):
+        if not m.labels:
+            continue
+        P = m.positions
+        for v, li in enumerate(m.labels):
+            a = acc.setdefault(li, {}).setdefault(side, [0.0, 0.0, 0.0, 0.0])
+            a[0] += P[v * 3]
+            a[1] += P[v * 3 + 1]
+            a[2] += P[v * 3 + 2]
+            a[3] += 1.0
+
+    def _centroids(li: int) -> List[List[float]]:
+        # Right side first, to match the ordering the structure list uses.
+        out = []
+        for side in (1, 0):
+            a = acc.get(li, {}).get(side)
+            if a and a[3]:
+                out.append([round(a[i] / a[3], 2) for i in range(3)])
+        return out
+
     cortical = [{
         "id": r.id, "label_index": r.label_index, "name": r.name,
         "short": r.short, "color": r.color, "buried": r.buried,
+        "centroids": _centroids(r.label_index),
         "knowledge": {
             "what_it_is": r.what_it_is, "where_it_is": r.where_it_is,
             "contributes_to": r.contributes_to,

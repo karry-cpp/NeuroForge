@@ -16,6 +16,11 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { decodeF32, decodeU32, decodeU8, decodeU16 } from './api.js';
 
+// Structures that form the outline of the specimen rather than sitting inside
+// it. Muting these with the rest left the brain looking cut off at the bottom.
+const SILHOUETTE = new Set(['cerebellum', 'brainstem']);
+const GHOST_GREY = new THREE.Color(0x8b9199);
+
 /* ------------------------------------------------------------------ shaders */
 
 const CORTEX_VERT = /* glsl */`
@@ -23,16 +28,35 @@ const CORTEX_VERT = /* glsl */`
   attribute float aSulc;
   attribute float aNetwork;
   uniform float uHasSulc;
+  uniform sampler2D uRegionTex;
+  uniform sampler2D uSelTex;
+  uniform sampler2D uNetTex;
+  uniform float uNetActive;
   varying vec3  vN;
   varying vec3  vWorld;
   varying vec3  vViewDir;
-  varying float vLabel;
-  varying float vNetwork;
+  varying vec4  vReg;
+  varying vec4  vNetCol;
+  varying float vSel;
+  varying float vNetOn;
+  varying float vHasNet;
   varying float vDepthFold;
 
   void main() {
-    vLabel = aLabel;
-    vNetwork = aNetwork;
+    // Sampled per VERTEX with the exact label, and the RESULT is what gets
+    // interpolated. Doing these lookups in the fragment shader meant reading
+    // an interpolated label: a triangle spanning labels 1 and 26 sweeps
+    // through every index between them, and a nearest-neighbour fetch then
+    // lit up whichever regions those indices happen to be - thin bands of the
+    // selected colour scattered across the brain. Only label 26 was immune,
+    // because nothing can interpolate past the highest index in use.
+    vReg = texture2D(uRegionTex, vec2((aLabel + 0.5) / 32.0, 0.5));
+    vSel = texture2D(uSelTex, vec2((aLabel + 0.5) / 32.0, 0.5)).r;
+    vNetCol = texture2D(uNetTex, vec2((aNetwork + 0.5) / 8.0, 0.5));
+    vNetOn = (uNetActive >= 0.0 && abs(aNetwork - uNetActive) < 0.5)
+             ? 1.0 : 0.0;
+    vHasNet = aNetwork > 0.5 ? 1.0 : 0.0;
+
     vN = normalize(normalMatrix * normal);
     vec4 world = modelMatrix * vec4(position, 1.0);
     vWorld = world.xyz;
@@ -57,8 +81,11 @@ const CORTEX_FRAG = /* glsl */`
   varying vec3  vN;
   varying vec3  vWorld;
   varying vec3  vViewDir;
-  varying float vLabel;
-  varying float vNetwork;
+  varying vec4  vReg;
+  varying vec4  vNetCol;
+  varying float vSel;
+  varying float vNetOn;
+  varying float vHasNet;
   varying float vDepthFold;
 
   uniform vec3  uBase;
@@ -68,6 +95,8 @@ const CORTEX_FRAG = /* glsl */`
   uniform float uTime;
   uniform float uActive;        // currently highlighted label (-1 = none)
   uniform float uDim;           // dim non-highlighted regions
+  uniform float uGhostFade;     // 1 = ghosted cortex must also turn see-through
+  uniform float uSelLayer;      // 1 = this pass draws ONLY the selection, opaque
   uniform sampler2D uRegionTex; // RGB = region colour, A = live glow
   uniform sampler2D uSelTex;    // R > 0.5 = this label is currently selected
   uniform sampler2D uNetTex;    // RGB = Yeo network colour
@@ -86,8 +115,8 @@ const CORTEX_FRAG = /* glsl */`
     vec3 albedo = mix(uDeep, uBase, 1.0 - vDepthFold);
 
     // ---- region tint ------------------------------------------------------
-    vec4 reg = texture2D(uRegionTex, vec2((vLabel + 0.5) / 32.0, 0.5));
-    vec4 net = texture2D(uNetTex, vec2((vNetwork + 0.5) / 8.0, 0.5));
+    vec4 reg = vReg;
+    vec4 net = vNetCol;
     bool netMode = uNetMode > 0.5;
 
     // In network mode the cortex is painted by functional network instead of
@@ -96,14 +125,34 @@ const CORTEX_FRAG = /* glsl */`
     // where one gyrus ends.
     vec3 rc = netMode ? net.rgb : reg.rgb;
     float glow = netMode
-      ? (vNetwork > 0.5 ? 0.62 : 0.0)
+      ? (vHasNet > 0.5 ? 0.62 : 0.0)
       : reg.a;
-    bool isActive = netMode
-      ? ((uNetActive >= 0.0) && (abs(vNetwork - uNetActive) < 0.5))
-      : (texture2D(uSelTex, vec2((vLabel + 0.5) / 32.0, 0.5)).r > 0.5);
+    bool isActive = netMode ? (vNetOn > 0.5) : (vSel > 0.5);
 
-    float tint = glow * 0.55 + (isActive ? 0.62 : 0.0);
+    // The selection is drawn by a separate opaque pass that writes depth, so
+    // that it occludes properly instead of blending with whatever the far
+    // hemisphere happens to have drawn. Each pass throws away the other's
+    // fragments. Without this the highlighted parcel came out mottled, and
+    // the far side's copy of it showed through as a wash of its own colour.
+    bool selLayer = uSelLayer > 0.5;
+    bool focusing = uDim > 0.5;
+    if (selLayer && !isActive) discard;
+    if (!selLayer && isActive && focusing) discard;
+
+    // Anything that is not the selection is about to be ghosted, and it must
+    // give up its live simulation glow first. The glow feeds a fresnel term
+    // further down, so a region that happened to be carrying activity kept a
+    // bright rim and read as a white outline drawn around it - which is why
+    // only the regions wired to simulation nodes showed the effect.
+    bool ghosted = (uDim > 0.5) && !isActive;
+    if (ghosted) glow = 0.0;
+
+    float tint = glow * 0.55 + (isActive ? 0.50 : 0.0);
     albedo = mix(albedo, rc, clamp(tint, 0.0, 0.9));
+    // Tinting mixes toward a single colour, which erases the gyral/sulcal
+    // contrast the albedo above was built from. Re-apply it, or a selected
+    // region flattens into one bright block and stops reading as tissue.
+    albedo *= 1.0 - vDepthFold * (isActive ? 0.45 : 0.0);
 
     // ---- lighting --------------------------------------------------------
     float key  = clamp(dot(N, normalize(uKeyDir)), 0.0, 1.0);
@@ -122,8 +171,11 @@ const CORTEX_FRAG = /* glsl */`
     // highlight reads as polished plastic, not as a moist membrane.
     vec3 H = normalize(normalize(uKeyDir) + V);
     float spec = pow(clamp(dot(N, H), 0.0, 1.0), 26.0);
+    // A tinted region is already bright, so the white sheen on top of it is
+    // what tips the selection over into looking like painted plastic.
+    float specGain = isActive ? 0.06 : 0.16;
     // Sulci are recessed and should not catch the sheen that crowns do.
-    lit += vec3(1.0, 0.97, 0.93) * spec * 0.16 * (1.0 - vDepthFold * 0.85);
+    lit += vec3(1.0, 0.97, 0.93) * spec * specGain * (1.0 - vDepthFold * 0.85);
 
     // ---- fresnel rim -----------------------------------------------------
     // Kept subtle in the solid view. The rim exists to separate the specimen
@@ -135,42 +187,51 @@ const CORTEX_FRAG = /* glsl */`
     // active region gets a travelling shimmer so it reads as "selected"
     if (isActive) {
       float band = sin(vWorld.z * 0.09 - uTime * 2.4) * 0.5 + 0.5;
-      lit += rc * band * 0.16;
-      lit += rc * fres * 0.55;
+      lit += rc * band * 0.07;
+      lit += rc * fres * 0.18;
     }
 
     // ---- opacity ---------------------------------------------------------
     float a = uOpacity;
     if (uXray > 0.5) a = mix(0.055, 0.40, fres);   // glass shell
 
-    // Focus mode. Rather than uniformly dimming everything that is not
-    // selected - which just makes the whole brain muddy - the unselected
-    // cortex collapses to little more than its own silhouette. Surfaces
-    // pointing at the camera drop out almost entirely; only the grazing
-    // rim survives, and a rim is what the eye reads as an outline.
+    // Focus mode. The unselected cortex stays real tissue and is simply
+    // pushed far down in brightness and saturation.
+    //
+    // It used to collapse to a fresnel silhouette instead. That works on a
+    // smooth blob, but this is a 163k-triangle folded surface: every gyral
+    // crown grazes the view direction somewhere, so the "outline" picked out
+    // all of them at once and read as a wire mesh draped over the brain.
+    // There is no exponent that fixes it - the detail is in the geometry.
     float ghost = uDim * (isActive ? 0.0 : 1.0);
     if (ghost > 0.0) {
-      // A high exponent is what makes this an outline rather than a haze.
-      // At pow(...,3.0) the falloff only bites ~46 degrees off the view
-      // axis, which leaves most of the surface visible and looks muddy;
-      // at 8.0 only the true silhouette survives.
+      float lum = dot(lit, vec3(0.299, 0.587, 0.114));
+      vec3 g = mix(vec3(lum), uRimColor, 0.22) * 0.30;
+      lit = mix(lit, g, ghost);
+
+      // Only dissolve the shell when the thing being highlighted is INSIDE
+      // it. For a cortical selection, staying opaque is what keeps the
+      // surface reading as a surface.
       //
-      // abs() matters here. The cortex is DoubleSide, and on a back-facing
-      // triangle dot(N,V) is negative, so the clamped ndv above is 0 and a
-      // plain fresnel would return 1.0 - making the far inner wall of the
-      // ghosted hemisphere render almost solid, which is the opposite of
-      // what focus mode is for.
-      float edge = pow(1.0 - abs(dot(N, V)), 8.0);
-      lit = mix(lit, uRimColor * 1.15, ghost);
-      a = mix(a, clamp(edge, 0.0, 0.85), ghost);
+      // A flat base alpha plus a wide, low-exponent rim, not a tight edge
+      // term: the rim is there to give the shell a shape, and any narrow
+      // falloff brings the wire-mesh look straight back.
+      float shell = 0.09 + 0.20 * pow(1.0 - abs(dot(N, V)), 3.0);
+      if (!gl_FrontFacing) shell *= 0.45;
+      float clear = mix(1.0, shell, uGhostFade);
+      a = mix(a, a * clear, ghost);
       // Throwing the invisible fragments away entirely is what makes this
       // work: a fragment that is kept would still write depth and would
       // quietly occlude the structures we are trying to reveal.
       if (a < 0.03) discard;
     } else if (isActive) {
-      // The selected region stays fully opaque so it reads as solid tissue
-      // sitting inside a glass skull.
-      a = max(a, 0.96);
+      // Fully opaque, so the parcel reads as solid tissue rather than as a
+      // tinted film lying over the shell behind it.
+      a = 1.0;
+      // The cortex is DoubleSide and writes no depth while the shell is
+      // dissolved, so the unlit inside of the far wall can blend over the
+      // near one. Darkening it keeps the parcel reading as one surface.
+      if (!gl_FrontFacing) lit *= 0.30;
     }
 
     gl_FragColor = vec4(lit, a);
@@ -236,9 +297,6 @@ export class Viewer {
     this.showSubcort = true;
     this.autoRotate = false;
     this._camTween = null;
-    this._revealed = null;
-    this.buriedLabels = new Set();
-    this._onReveal = () => {};
     this._onPick = () => {};
     this._onHover = () => {};
 
@@ -500,6 +558,8 @@ export class Viewer {
       uTime:   { value: 0.0 },
       uActive: { value: -1.0 },
       uDim:    { value: 0.0 },
+      uGhostFade: { value: 0.0 },
+      uSelLayer: { value: 0.0 },
       uKeyDir: { value: this.keyDir },
       uRimColor: { value: new THREE.Color(0x8fa6bd) },
       uRegionTex: { value: this.regionTex },
@@ -515,6 +575,14 @@ export class Viewer {
     this.cortexL = this._makeCortex(M.cortex_L, 'L');
     this.cortexR = this._makeCortex(M.cortex_R, 'R');
     this.root.add(this.cortexL, this.cortexR);
+
+    // Opaque companion pass for the highlighted parcel. Shares geometry and
+    // every uniform object with the shell, so it needs no separate updating.
+    this.selLayerUniforms = Object.assign({}, this.cortexUniforms,
+                                          { uSelLayer: { value: 1.0 } });
+    this.selL = this._makeSelLayer(this.cortexL);
+    this.selR = this._makeSelLayer(this.cortexR);
+    this.root.add(this.selL, this.selR);
 
     for (const s of scene.structures) {
       this.structMeta.set(s.id, s);
@@ -575,6 +643,23 @@ export class Viewer {
     const m = new THREE.Mesh(this._geomFrom(enc, true), mat);
     m.userData = { hemi, kind: 'cortex' };
     m.renderOrder = 2;
+    return m;
+  }
+
+  /** Opaque pass drawing only the selected parcel, so it writes depth. */
+  _makeSelLayer(source) {
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.selLayerUniforms,
+      vertexShader: CORTEX_VERT,
+      fragmentShader: CORTEX_FRAG,
+      transparent: false,
+      side: THREE.DoubleSide,
+      depthWrite: true,
+    });
+    const m = new THREE.Mesh(source.geometry, mat);
+    m.userData = { hemi: source.userData.hemi, kind: 'cortexSel' };
+    m.renderOrder = 1;          // before the shell, so the shell depth-tests
+    m.visible = false;
     return m;
   }
 
@@ -651,14 +736,6 @@ export class Viewer {
     this.bloom.strength = anat ? 0.20 : 0.46;
   }
 
-  /** Undo an automatic x-ray reveal, leaving the user's own setting alone. */
-  _restoreReveal() {
-    if (!this._revealed) return;
-    const was = this._revealed.xray;
-    this._revealed = null;
-    this.setXray(was, true);
-  }
-
   setXray(on, soft = false) {
     this._xrayTarget = on ? 1 : 0;
     if (!soft) this.cortexUniforms.uXray.value = this._xrayTarget;
@@ -680,21 +757,33 @@ export class Viewer {
     this.hemi = h;
     if (this.cortexL) this.cortexL.visible = (h === 'both' || h === 'L');
     if (this.cortexR) this.cortexR.visible = (h === 'both' || h === 'R');
+    this._syncSelLayer();
+  }
+
+  /** The opaque selection pass mirrors the shell, and only runs while focusing. */
+  _syncSelLayer() {
+    const on = this.cortexUniforms.uDim.value > 0.5;
+    if (this.selL) this.selL.visible = on && !!this.cortexL?.visible;
+    if (this.selR) this.selR.visible = on && !!this.cortexR?.visible;
   }
 
   setSubcortical(on) {
     this.showSubcort = on;
-    for (const [id, m] of this.structures) {
-      if (this._hiddenStructs?.has(id)) { m.visible = false; continue; }
-      m.visible = on;
-    }
+    for (const [id, m] of this.structures) m.visible = this._structVisible(id);
+  }
+
+  /** Three independent reasons a structure may be hidden, in one place. */
+  _structVisible(id) {
+    return this.showSubcort
+        && !this._hiddenStructs?.has(id)
+        && !this._mutedStructs?.has(id);
   }
 
   toggleStructure(id, on) {
     this._hiddenStructs = this._hiddenStructs || new Set();
     if (on) this._hiddenStructs.delete(id); else this._hiddenStructs.add(id);
     const m = this.structures.get(id);
-    if (m) m.visible = on && this.showSubcort;
+    if (m) m.visible = this._structVisible(id);
   }
 
   setPins(on) { this.showPins = on; }
@@ -721,6 +810,8 @@ export class Viewer {
     // Reuse the same ghosting path as region focus: everything that is not
     // in the chosen network collapses to its outline.
     this.cortexUniforms.uDim.value = active >= 0 ? 1.0 : 0.0;
+    this.cortexUniforms.uGhostFade.value = 0.0;
+    this._syncSelLayer();
     const xray = this.cortexUniforms.uXray.value > 0.5;
     for (const m of [this.cortexL, this.cortexR]) {
       if (m) m.material.depthWrite = !xray;
@@ -748,18 +839,11 @@ export class Viewer {
     const any = labels.size > 0 || structs.size > 0;
     this.selected = hit || (any ? { kind: 'group' } : null);
 
-    // Some cortex cannot be seen from outside at all - the insula is folded
-    // inside the lateral sulcus. Highlighting it on an opaque brain is a
-    // no-op the user experiences as a bug, so reveal it instead. Undone in
-    // _restoreReveal() as soon as something else is selected.
-    const needsReveal = [...labels].some(i => this.buriedLabels?.has(i));
-    if (needsReveal && !this._revealed) {
-      this._revealed = { xray: this.cortexUniforms.uXray.value > 0.5 };
-      this.setXray(true, true);
-      this._onReveal('Anterior insula is buried inside the lateral sulcus \u2014 showing x-ray view.');
-    } else if (!needsReveal && this._revealed) {
-      this._restoreReveal();
-    }
+    // Buried cortex used to force x-ray on, because selecting the insula on
+    // an opaque brain highlighted nothing. The shell now dissolves for every
+    // selection, so that is already handled - and forcing x-ray on top of it
+    // made the insula the one region that rendered at a different opacity.
+    // Measured: the insula is MORE visible without it.
 
     this.selData.fill(0);
     for (const i of labels) {
@@ -767,27 +851,58 @@ export class Viewer {
     }
     this.selTex.needsUpdate = true;
     this.cortexUniforms.uDim.value = any ? 1.0 : 0.0;
+    // Any selection dissolves the shell, so a picked cortical parcel reads
+    // the same way a picked structure does: one solid thing inside glass.
+    this.cortexUniforms.uGhostFade.value = any ? 1.0 : 0.0;
+    this._syncSelLayer();
 
-    // Ghosted fragments are discarded in the shader rather than blended,
-    // so depth writing can stay on and the selected region still occludes
-    // correctly. Only x-ray mode needs it off.
+    // Ghosted fragments keep a flat base alpha and so never reach the
+    // discard, which means a dissolved shell would otherwise write depth and
+    // occlude whatever it is meant to be revealing.
     const xray = this.cortexUniforms.uXray.value > 0.5;
+    const dissolved = any;
     for (const m of [this.cortexL, this.cortexR]) {
-      if (m) m.material.depthWrite = !xray;
+      if (m) m.material.depthWrite = !xray && !dissolved;
     }
+
+    // Once the shell dissolves, every faded structure inside shows through it
+    // at once. That is useful context when the selection IS a structure, and
+    // pure clutter when it is a patch of cortex - fifteen of them stacked
+    // compete with the parcel you actually picked.
+    const cortexOnly = any && structs.size === 0;
+    this._mutedStructs = new Set(
+      cortexOnly
+        ? [...this.structures.keys()].filter(id => !SILHOUETTE.has(id))
+        : []);
 
     for (const [id, m] of this.structures) {
       const on = structs.has(id);
       const meta = this.structMeta.get(id);
       m.material.emissiveIntensity = on ? 1.15 : (xray ? 0.34 : 0.16);
       // Unselected structures fade almost out too, so the selection is the
-      // only solid thing on screen.
+      // only solid thing on screen. Kept low because ~15 translucent shells
+      // with depthWrite off stack additively and read far stronger than a
+      // single one at the same alpha. The silhouette pair is allowed more,
+      // so the specimen still reads as one body.
+      const fade = (cortexOnly && SILHOUETTE.has(id)) ? 0.16 : 0.03;
       m.material.opacity = any && !on
-        ? (meta.opacity ?? 1) * 0.12 : (meta.opacity ?? 1);
+        ? (meta.opacity ?? 1) * fade : (meta.opacity ?? 1);
       m.material.depthWrite = !(any && !on);
       m.userData.pulse = on;
+      m.visible = this._structVisible(id);
+
+      // Kept grey while the cortex is ghosted; a saturated cerebellum beside
+      // desaturated cortex stops reading as the same specimen.
+      const base = m.userData.baseColor;
+      if (base) {
+        const mute = cortexOnly && SILHOUETTE.has(id) ? 0.82 : 0.0;
+        m.material.color.copy(base).lerp(GHOST_GREY, mute);
+        m.material.emissive.copy(base).lerp(GHOST_GREY, mute);
+      }
     }
     for (const [id, pin] of this.pins) {
+      // _updatePins() hides the pin of any structure that is not visible, so
+      // muted ones need no handling here.
       pin.el.classList.toggle('faded', any && !structs.has(id));
     }
   }

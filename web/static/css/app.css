@@ -277,6 +277,15 @@ b { font-weight: 600; }
 }
 #netList { margin-top: 4px; }
 .structrow .eye { margin-left: auto; font-size: 10px; opacity: .5; }
+.structrow .tagmini {
+  margin-left: auto; font-size: 9px; letter-spacing: .05em;
+  color: var(--txt-faint); border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 4px;
+}
+.docknote {
+  font-size: 10px; line-height: 1.45; color: var(--txt-faint);
+  margin-top: 7px;
+}
 
 /* --------------------------------------------------------------- modebar */
 #modebar {

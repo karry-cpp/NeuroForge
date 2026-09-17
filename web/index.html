@@ -107,6 +107,18 @@ current state and your chosen target state. A model value.">
     <label class="check"><input type="checkbox" id="chkSpin"> Auto-rotate</label>
   </div>
 
+  <div class="dockgroup">
+    <div class="docktitle">Atlas</div>
+    <div class="segmented" id="focusSeg">
+      <button data-focus="regulation" class="active"
+              title="Only the regions this simulation actually models">
+        Regulation</button>
+      <button data-focus="all"
+              title="Every region and structure in the atlas">Full</button>
+    </div>
+    <div class="docknote" id="focusNote"></div>
+  </div>
+
   <div class="dockgroup" id="groupList">
     <div class="docktitle">Systems</div>
     <!-- injected -->
@@ -117,6 +129,11 @@ current state and your chosen target state. A model value.">
     <label class="check"><input type="checkbox" id="chkNetworks">
       Functional networks</label>
     <div id="netList" class="hidden"><!-- injected --></div>
+  </div>
+
+  <div class="dockgroup" id="cortexList">
+    <div class="docktitle">Cortex</div>
+    <!-- injected -->
   </div>
 
   <div class="dockgroup" id="structList">

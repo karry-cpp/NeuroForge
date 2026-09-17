@@ -18,10 +18,32 @@ import {
 const $  = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
+/* ------------------------------------------------------------------------
+ * Sidebar focus.
+ *
+ * A curated shortlist of the regions this simulation actually has rules for,
+ * so the dock is not thirty rows of anatomy that no logged event ever
+ * touches.
+ *
+ * This is a VIEW filter only. Nothing is removed from the scene, the atlas or
+ * the model. The hidden structures still render, are still clickable on the
+ * brain itself, and still anchor pathways - caudate, putamen and accumbens
+ * carry the entire habit-formation story, which is the idea the application
+ * is built around. "Full" restores every row.
+ * ---------------------------------------------------------------------- */
+const FOCUS = {
+  cortex: ['mPFC', 'vmPFC', 'dlPFC', 'dACC', 'sgACC', 'PCC', 'aINS'],
+  structures: ['amygdala', 'hippocampus', 'acc', 'sgacc', 'brainstem'],
+  groups: ['PFC', 'latPFC'],
+};
+
+const inFocus = (kind, id) => App.focus === 'all' || FOCUS[kind].includes(id);
+
 const App = {
   scene: null, model: null, state: null,
   mode: 'anatomy', viewState: 'current', replayDay: null,
   playing: false, playT: 0,
+  focus: 'regulation',
   eventById: {}, nodeById: {}, cortexById: {}, cortexByIndex: {},
   structById: {},
 };
@@ -47,6 +69,20 @@ window.NF.debug = { showCortex: (...a) => showCortex(...a),
                       return !!App.compareOn;
                     },
                     endCompare: () => endCompare(),
+                    setFocus: (f) => { App.focus = f; buildDock();
+                                       return App.focus; },
+                    dockRows: () => ({
+                      cortex: $$('#cortexList .structrow').length,
+                      structures: $$('#structList .structrow').length,
+                      groups: $$('#groupList .structrow').length,
+                    }),
+                    clickCortexRow: (id) => {
+                      const r = App.cortexById[id];
+                      const row = r && $(`#cortexList [data-cortex="`
+                        + `${r.label_index}"]`);
+                      if (row) row.click();
+                      return !!row;
+                    },
                     fineName: (id) => fineName(id) };
 
 /** Fraction of canvas pixels that are meaningfully lit. Used by the smoke
@@ -129,18 +165,9 @@ function index() {
 function wire() {
   const V = App.viewer;
 
-  /* ---- regions that no external view can show ---- */
-  // The insula is folded inside the lateral sulcus. Selecting it on an opaque
-  // brain highlights nothing visible, which reads as a broken feature, so the
-  // viewer switches to x-ray and says why.
-  for (const r of App.scene.cortical_regions) {
-    if (r.buried) V.buriedLabels.add(r.label_index);
-  }
-  V._onReveal = (msg) => toast('Hidden region', msg);
-
   /* ---- picking ---- */
   V.onPick((hit) => {
-    if (!hit) { V.select(null); Panel.close(); return; }
+    if (!hit) { clearSelection(); Panel.close(); return; }
     if (hit.kind === 'edge') { showEdge(hit.id); return; }
     V.select(hit);
     if (hit.kind === 'structure') showStructure(hit.id);
@@ -196,9 +223,16 @@ function wire() {
   $('#chkSpin').onchange    = (e) => V.setAutoRotate(e.target.checked);
 
   /* ---- structure list ---- */
-  buildStructureList();
-  buildGroupList();
-  buildNetworkList();
+  buildDock();
+
+  $$('#focusSeg button').forEach(b => b.onclick = () => {
+    $$('#focusSeg button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    App.focus = b.dataset.focus;
+    App.viewer.select(null);
+    Panel.close();
+    buildDock();
+  });
 
   /* ---- state toggle ---- */
   $$('#stateSeg button').forEach(b => b.onclick = () => {
@@ -215,7 +249,9 @@ function wire() {
     $('#timeline').classList.toggle('hidden');
   $('#btnMenu').onclick     = openMenu;
 
-  $('#panelClose').onclick  = () => { Panel.close(); App.viewer.select(null); };
+  // Closing the panel keeps the highlight. The usual reason to dismiss it is
+  // to look at the region it was covering.
+  $('#panelClose').onclick  = () => Panel.close();
   $('#btnChat').onclick     = () => App.chat?.toggle();
   $('#chatClose').onclick   = () => App.chat?.close();
   $('#modalClose').onclick  = Modal.close;
@@ -240,7 +276,8 @@ function wire() {
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (Modal.isOpen()) Modal.close();
-      else if (Panel.isOpen()) { Panel.close(); V.select(null); }
+      else if (Panel.isOpen()) Panel.close();
+      else if (V.selected) clearSelection();
     }
     if (e.target.tagName === 'INPUT') return;
     const k = e.key.toLowerCase();
@@ -304,13 +341,38 @@ function showNetwork(id) {
   Panel.open(networkPanel(n, App.scene.network_caveat));
 }
 
+/** Drop the highlight and un-light whichever dock row pointed at it. */
+function clearSelection() {
+  App.viewer.select(null);
+  $$('#cortexList .structrow, #structList .structrow, ' +
+     '#groupList .structrow, #netList .structrow')
+    .forEach(r => r.classList.remove('on'));
+}
+
+/* Rebuild every dock list against the current focus. */
+function buildDock() {
+  buildGroupList();
+  buildCortexList();
+  buildStructureList();
+  buildNetworkList();
+
+  const hidden = (App.scene.structures || []).length
+    + (App.scene.cortical_regions || []).length
+    - (FOCUS.structures.length + FOCUS.cortex.length);
+  $('#focusNote').textContent = App.focus === 'all'
+    ? 'Every region in the atlas.'
+    : `${hidden} more still on the brain — click them directly, `
+      + 'or switch to Full.';
+}
+
 /* Composite anatomical terms. "Prefrontal cortex" and "dorsal striatum" are
  * collections of regions, not parcels, so they are offered as selections over
  * things that already exist rather than drawn as invented regions. */
-function buildGroupList() {
-  const groups = App.scene.groups || [];
+function buildGroupList() {  const groups = (App.scene.groups || [])
+    .filter(g => inFocus('groups', g.id));
   const host = $('#groupList');
   if (!groups.length) { host.classList.add('hidden'); return; }
+  host.classList.remove('hidden');
   host.innerHTML = '<div class="docktitle">SYSTEMS</div>' +
     groups.map(g => `
       <div class="structrow" data-group="${g.id}">
@@ -345,9 +407,62 @@ function showGroup(g) {
   Panel.open(groupPanel(g, parts));
 }
 
+/* Surface parcels. These were always clickable on the brain, but several of
+ * them - medial prefrontal, subgenual and posterior cingulate, anterior
+ * insula - sit on the medial wall or inside a sulcus, so on an opaque brain
+ * there was no way to reach them from the outside. This gives them a row.
+ * Selecting a buried one makes the viewer switch to x-ray, as picking does. */
+function buildCortexList() {
+  const host = $('#cortexList');
+  const order = FOCUS.cortex;
+  const items = (App.scene.cortical_regions || [])
+    .filter(r => inFocus('cortex', r.id))
+    .slice()
+    .sort((a, b) => {
+      const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+          || a.label_index - b.label_index;
+    });
+
+  if (!items.length) { host.classList.add('hidden'); return; }
+  host.classList.remove('hidden');
+  host.innerHTML = '<div class="docktitle">CORTEX</div>' +
+    items.map(r => `
+      <div class="structrow" data-cortex="${r.label_index}">
+        <span class="sw" style="background:${r.color};color:${r.color}"></span>
+        <span class="nm">${r.short}</span>
+        ${r.buried ? '<span class="tagmini" title="Folded inside a sulcus '
+          + 'or on the medial wall - selecting it turns the surface to '
+          + 'glass">buried</span>'
+          : ''}
+      </div>`).join('');
+
+  host.querySelectorAll('.structrow').forEach(row => {
+    row.onclick = () => {
+      const li = Number(row.dataset.cortex);
+      const already = row.classList.contains('on');
+      host.querySelectorAll('.structrow').forEach(x => x.classList.remove('on'));
+      if (already) { App.viewer.select(null); Panel.close(); return; }
+      row.classList.add('on');
+      App.viewer.select({ kind: 'cortex', id: li });
+      showCortex(li);
+      focusCortex(li);
+    };
+  });
+}
+
+function focusCortex(labelIndex) {
+  const r = App.cortexByIndex[labelIndex];
+  const c = r?.centroids?.[0];
+  if (!c) return;
+  // RAS (x,y,z) -> world (x, z, -y), matching viewer.root's rotation
+  App.viewer.controls.target.set(c[0], c[2], -c[1]);
+}
+
 function buildStructureList() {
   const host = $('#structList');
   const items = App.scene.structures
+    .filter(s => inFocus('structures', s.id))
     .slice().sort((a, b) => a.order - b.order);
   host.innerHTML = '<div class="docktitle">STRUCTURES</div>' +
     items.map(s => `

@@ -125,7 +125,7 @@ Both are documented in `DK_TO_LABEL` so they can be argued with.
 > fsaverage is an average of 40 brains. It is not the user's brain. The scene
 > metadata says so.
 
-**`SCENE_VERSION` in `build.py` is currently 8. Bump it whenever geometry
+**`SCENE_VERSION` in `build.py` is currently 10. Bump it whenever geometry
 changes**, or a stale cache in `neuroforge/_cache/` will be served silently.
 
 ### Subcortical geometry
@@ -277,7 +277,7 @@ python -m neuroforge --no-browser       # serve only, port 8770
 python -m neuroforge --rebuild          # force scene rebuild
 python -m neuroforge --cli              # text prototype
 python -m neuroforge.anatomy.fetch      # download real anatomy
-python -m unittest discover -s tests    # 11 tests
+python -m unittest discover -s tests    # 27 tests
 ```
 
 ### Browser testing (this is how rendering bugs get caught)
@@ -316,11 +316,38 @@ Expected: `BOOT: ok`, `cortexTris: 163840`, `structures: 13`, `ERRORS: 0`.
    fresnel exponent was too low to read as an outline, and - the real culprit
    - the cortex is `DoubleSide`, so on back faces `dot(N,V)` is negative,
    clamps to 0, and fresnel returns 1.0. Fixed with `abs()`. **Measure with
-   `readPixels`; do not eyeball a screenshot.**
+   `readPixels`; do not eyeball a screenshot.** (The fresnel-outline approach
+   this describes has since been abandoned entirely - see 9 and 10 below.
+   Unselected cortex is now dimmed tissue, because an edge term on a folded
+   surface outlines every gyral crown and reads as wire mesh.)
 8. **`readPixels` after the frame is presented returns all zeros.** The
    drawing buffer is cleared on present, so a late read looks like a
    perfectly dark brain rather than a failed measurement. `measureLitFraction`
    defers to the end of the next `composer.render()`.
+9. **Label lookups must happen in the vertex shader.** `vLabel` is a
+   `varying`, so it is interpolated. Doing
+   `texture2D(uSelTex, (vLabel + 0.5) / 32.0)` in the *fragment* shader means
+   a triangle spanning labels 1 and 26 sweeps through every index between
+   them, and the nearest-neighbour fetch lights up whichever regions those
+   happen to be - stray bands of the selected colour scattered over the
+   brain. Only label 26 was immune, being the highest in use, and that
+   asymmetry is the diagnostic signature. Sample `uRegionTex` / `uSelTex` /
+   `uNetTex` per vertex with the exact `aLabel` and interpolate the results.
+   **To test:** write a unique colour into `regionData` for label 8, which no
+   vertex carries, select it, and count pixels of that colour - 321 before,
+   0 after. Do *not* test label 8 without colouring it first: it is filtered
+   out of `CORTICAL_REGIONS`, so its texture row is black, the bleed renders
+   black on a dark background, and a chroma metric reports a false negative.
+   That mistake made this exact bug get diagnosed correctly and then wrongly
+   discarded.
+10. **A dissolved cortex writes no depth, so nothing is ordered.** When focus
+   mode turns the shell to glass, cortex fragments blend in triangle-index
+   order: a selected parcel comes out mottled, and the opposite hemisphere's
+   copy of it bleeds through as a wash of its own colour. The selection is
+   therefore drawn by a **separate opaque pass** (`selL`/`selR`, `uSelLayer`)
+   that writes depth, with each pass discarding the other's fragments. This
+   is the same reason subcortical structures always looked solid - they are
+   opaque meshes that write depth.
 
 ---
 
@@ -496,7 +523,7 @@ Verified when this landed: 8 concurrent `/api/scene` requests overlapped 5.3×;
 
 **Working:** real anatomy, all three modes, view presets, picking, circuits
 with GPU-driven thickness, timeline scrubbing, logging with per-pathway delta
-readout, save/load, 11/11 tests passing, 0 console errors.
+readout, save/load, 27/27 tests passing, 0 console errors.
 
 **Superseded:** `neuroforge/ui/` is the original Tkinter dashboard. It still
 runs but is no longer the product. Treat as legacy.
