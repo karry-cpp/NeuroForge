@@ -4,6 +4,25 @@
 It records not just *what* the code does but *why it is the way it is*, and
 which decisions are deliberate and must not be "helpfully" reverted.
 
+## Start here
+
+1. Read this document in full. It is ~24 KB; one pass will save you a day.
+2. `python -m neuroforge --port 8770` to run it.
+3. `node scripts/smoketest.js http://127.0.0.1:8770/` and
+   `node scripts/coverage.js http://127.0.0.1:8770/` to see the current state
+   before you judge whether your change helped.
+
+Three things that waste the most time here:
+
+- **Zero pip dependencies, no numpy.** The NIfTI reader, the isosurface
+  extractor and the GIFTI reader are all hand-written stdlib. Do not reach
+  for a library; there isn't one.
+- **`node --check` is not verification.** A backtick inside a GLSL comment
+  once killed a whole render path while passing the syntax check. Drive the
+  real code path in a headless browser instead (§7).
+- **Measure, don't eyeball.** Vertex counts, lit fractions and mean RGB have
+  each caught a bug that looked fine on screen (§9b).
+
 ---
 
 ## 1. What this application is
