@@ -127,5 +127,88 @@ class TestInterpretEntryPoint(unittest.TestCase):
         self.assertIsInstance(interpret("I meditated"), Interpretation)
 
 
+class TestKeywordCoverage(unittest.TestCase):
+    """The offline path is what a first-time user with no model actually gets.
+
+    "angry" and "skipped" were once absent from the cue table, so the most
+    obvious sentence anyone types matched nothing at all.
+    """
+
+    def top(self, text):
+        r = interpret(text, allow_llm=False)
+        return r.proposals[0].event if r.proposals else None
+
+    def test_plain_anger_is_matched(self):
+        for text in ("i got angry",
+                     "I got angry at my manager",
+                     "i was angry all afternoon",
+                     "i lost it with him"):
+            self.assertEqual(self.top(text), "reactive_outburst", text)
+
+    def test_plain_avoidance_is_matched(self):
+        for text in ("i skipped the meeting because i was dreading it",
+                     "i bailed on dinner",
+                     "i stayed home instead"):
+            self.assertEqual(self.top(text), "avoidance", text)
+
+    def test_negation_still_flips_the_meaning(self):
+        # "didn't get angry" is a regulated success; a matcher that only saw
+        # "angry" would record the opposite of what happened.
+        self.assertEqual(self.top("i didn't get angry even though he pushed"),
+                         "regulated_success")
+        self.assertEqual(self.top("i didn't snap"), "regulated_success")
+        self.assertNotEqual(self.top("i never got angry"), "reactive_outburst")
+
+    def test_dreading_does_not_outrank_doing_it_anyway(self):
+        # Both cues are present in "made the call i was dreading"; the longer,
+        # more specific one has to win or exposure reads as avoidance.
+        self.assertEqual(self.top("i made the call i was dreading"), "exposure")
+
+    def test_confidence_stays_capped(self):
+        for p in interpret("i got angry and shouted", allow_llm=False).proposals:
+            self.assertLessEqual(p.confidence, 0.62)
+
+
+class TestDiscoveryCachesAMiss(unittest.TestCase):
+    """A machine with no model runner must not re-probe on every entry.
+
+    The cache held Optional[dict] and tested `is not None`, so "no runner
+    found" was indistinguishable from "nothing cached yet". Every interpret
+    paid two socket timeouts - about three seconds - and the result was
+    still correct, which is why it went unnoticed.
+    """
+
+    def setUp(self):
+        self.runners = discover._RUNNERS
+        self.get = discover._get_json
+        self.env = os.environ.pop("NEUROFORGE_LLM", None)
+        self.calls = 0
+
+        def counting(url, timeout=0.5):
+            self.calls += 1
+            return None                      # nothing is listening
+
+        discover._get_json = counting
+        discover._RUNNERS = (
+            ("ollama", "http://127.0.0.1:59999/v1", "http://x/a"),
+            ("lmstudio", "http://127.0.0.1:59998/v1", "http://x/b"),
+        )
+
+    def tearDown(self):
+        discover._RUNNERS = self.runners
+        discover._get_json = self.get
+        if self.env is not None:
+            os.environ["NEUROFORGE_LLM"] = self.env
+        discover.find(force=True)
+
+    def test_miss_is_cached(self):
+        self.assertIsNone(discover.find(force=True))
+        probes = self.calls
+        self.assertEqual(probes, len(discover._RUNNERS))
+        for _ in range(5):
+            self.assertIsNone(discover.find())
+        self.assertEqual(self.calls, probes, "a cached miss was re-probed")
+
+
 if __name__ == "__main__":
     unittest.main()

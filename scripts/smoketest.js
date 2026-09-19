@@ -110,7 +110,9 @@ const URL = process.argv[2] || 'http://127.0.0.1:8770/';
   await page.waitForTimeout(900);
   const delta = await page.textContent('.delta-row .dval').catch(() => null);
   console.log('DELTA:', delta && delta.trim());
-  await page.click('#modalClose');
+  // logging is a docked surface, not a modal; #modalClose is a different
+  // element and is never visible during this flow.
+  await page.click('#logClose');
 
   // demo + replay
   await page.evaluate(async () => {

@@ -18,7 +18,12 @@ _RUNNERS = (
 # Probing two ports on every call would put a socket timeout in front of each
 # request. Cached, with a short life so that starting a runner after the app
 # is still noticed without a restart.
-_CACHE: Optional[Dict[str, str]] = None
+#
+# The sentinel matters: a miss is cached as None, and `None` is also what an
+# empty cache holds. Testing `is not None` meant every miss re-probed, so a
+# machine with no runner paid the full timeout on every single interpret.
+_UNSET = object()
+_CACHE: Any = _UNSET
 _CACHED_AT = 0.0
 _TTL = 20.0
 
@@ -34,10 +39,11 @@ def _off() -> bool:
         "off", "none", "0", "false", "disabled")
 
 
-def _get_json(url: str, timeout: float = 1.5) -> Optional[Dict[str, Any]]:
-    # 1.5s, not 150ms: a model server that is busy loading weights answers
-    # slowly, and treating that as "not installed" silently downgrades the
-    # whole feature to keyword matching.
+def _get_json(url: str, timeout: float = 0.5) -> Optional[Dict[str, Any]]:
+    # Short by design: this is localhost, where a running server answers in
+    # milliseconds. Windows does not always refuse a dead port promptly, so
+    # the timeout is what a missing runner actually costs - twice, once per
+    # probe - and it is charged before the user sees anything.
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             value = json.loads(response.read().decode("utf-8"))
@@ -76,7 +82,9 @@ def _is_embedding(model_id: str) -> bool:
 
 def _lmstudio_pick() -> str:
     """A loaded, non-embedding model from LM Studio's native model list."""
-    payload = _get_json("http://127.0.0.1:1234/api/v0/models")
+    # Longer than the discovery probe: by this point the server has already
+    # answered, so the only question is how busy it is.
+    payload = _get_json("http://127.0.0.1:1234/api/v0/models", timeout=2.0)
     entries = (payload or {}).get("data")
     if not isinstance(entries, list):
         return ""
@@ -98,10 +106,10 @@ def find(force: bool = False) -> Optional[Dict[str, str]]:
     """
     global _CACHE, _CACHED_AT
     if force:
-        _CACHE, _CACHED_AT = None, 0.0
+        _CACHE, _CACHED_AT = _UNSET, 0.0
     if _off():
         return None
-    if _CACHE is not None and (time.monotonic() - _CACHED_AT) < _TTL:
+    if _CACHE is not _UNSET and (time.monotonic() - _CACHED_AT) < _TTL:
         return _CACHE
     for runner, base, probe in _RUNNERS:
         payload = _get_json(probe)

@@ -771,7 +771,7 @@ body.log-open   #timeline {
    rule, so reusing it here rendered a bare rectangle. */
 #nlGo {
   display: inline-flex; align-items: center; gap: 7px;
-  padding: 9px 18px 9px 14px; border-radius: 999px;
+  padding: 9px 18px; border-radius: 999px;
   font-size: 12.5px; font-weight: 600; letter-spacing: .01em;
   color: #16181d; background: linear-gradient(#f4f6f9, #dfe3e9);
   border: 1px solid rgba(255, 255, 255, .55);
@@ -779,10 +779,6 @@ body.log-open   #timeline {
               0 3px 10px rgba(0, 0, 0, .38);
   transition: transform var(--fast), box-shadow var(--fast),
               background var(--fast), opacity var(--fast);
-}
-#nlGo::before {
-  content: '\2726';                       /* four-pointed star */
-  font-size: 11px; line-height: 1; opacity: .65; flex: none;
 }
 #nlGo:hover:not(:disabled) {
   background: linear-gradient(#fff, #e9edf3);
@@ -798,6 +794,7 @@ body.log-open   #timeline {
   outline: 2px solid var(--cyan-dim); outline-offset: 3px;
 }
 #nlGo:disabled { cursor: default; opacity: .72; transform: none; }
+/* The button carries no icon at rest; the spinner is the only ::before. */
 #nlGo.is-busy::before {
   content: '';
   width: 11px; height: 11px;
@@ -807,6 +804,111 @@ body.log-open   #timeline {
   animation: nlspin .6s linear infinite;
 }
 @keyframes nlspin { to { transform: rotate(360deg); } }
+
+/* ---- how the interpreter works, and how to give it a model ------------- */
+.nl-how { margin-top: 16px; }
+
+.nl-how-status {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 11.5px; color: var(--txt-dim);
+}
+.nl-how-status b { color: var(--txt); font-weight: 600; }
+.nl-how-status i {
+  font-style: normal; color: var(--txt-faint); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nl-how-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  align-self: center;
+  background: var(--txt-faint); opacity: .5;
+}
+.nl-how-dot.on {
+  background: var(--green); opacity: 1;
+  box-shadow: 0 0 0 3px rgba(94, 234, 212, .14);
+}
+
+.nl-how-lead {
+  margin: 7px 0 0; font-size: 11.5px; line-height: 1.65;
+  color: var(--txt-faint);
+}
+
+/* Chrome stays neutral - saturated colour is reserved for things that carry
+   information. The status dot is the one exception here, because it is the
+   information. */
+.nl-how-more { margin-top: 9px; }
+.nl-how-more > summary {
+  display: inline-flex; align-items: center; cursor: pointer;
+  list-style: none; user-select: none;
+  font-size: 11.5px; color: var(--txt-dim);
+  padding: 3px 0;
+}
+.nl-how-more > summary::-webkit-details-marker { display: none; }
+.nl-how-more > summary span { border-bottom: 1px solid var(--line-2); }
+.nl-how-more > summary span::after {
+  content: ' \25BE'; opacity: .7;
+}
+.nl-how-more[open] > summary span::after { content: ' \25B4'; }
+.nl-how-more > summary:hover { color: var(--txt); }
+.nl-how-more > summary:focus-visible {
+  outline: 2px solid var(--sel-line); outline-offset: 3px; border-radius: 4px;
+}
+
+.nl-how-body {
+  margin-top: 10px; padding: 12px 13px;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: rgba(255, 255, 255, .022);
+}
+.nl-how-note {
+  margin: 0; font-size: 11px; line-height: 1.6; color: var(--txt-faint);
+}
+.nl-how-sub {
+  margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--line);
+  font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--txt-faint);
+}
+.nl-how-sub + .nl-how-note { margin-top: 7px; }
+
+.nl-how-steps {
+  margin: 11px 0 0; padding: 0; list-style: none; counter-reset: nlstep;
+}
+.nl-how-steps li {
+  position: relative; padding-left: 26px; margin-bottom: 10px;
+  font-size: 11px; line-height: 1.6;
+}
+.nl-how-steps li:last-child { margin-bottom: 0; }
+.nl-how-steps li::before {
+  counter-increment: nlstep; content: counter(nlstep);
+  position: absolute; left: 0; top: 0;
+  width: 17px; height: 17px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9.5px; font-weight: 600;
+  color: var(--txt-dim); border: 1px solid var(--line-2);
+}
+.nl-how-steps b { display: block; color: var(--txt); font-weight: 600; }
+.nl-how-steps span { color: var(--txt-faint); }
+
+.nl-how-env { margin: 9px 0 0; padding: 0; list-style: none; }
+.nl-how-env li {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  padding: 5px 0; border-top: 1px solid var(--line);
+  font-size: 10.5px;
+}
+.nl-how-env li:first-child { border-top: 0; }
+.nl-how-env span { color: var(--txt-faint); }
+
+.nl-how code {
+  font-family: var(--mono, ui-monospace, "Cascadia Code", Consolas, monospace);
+  font-size: 10.5px; color: var(--txt-dim);
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--line); border-radius: 4px;
+  padding: 1px 5px;
+}
+.nl-how a {
+  color: var(--txt-dim); text-decoration: underline;
+  text-decoration-color: var(--line-2); text-underline-offset: 2px;
+}
+.nl-how a:hover { color: var(--txt); text-decoration-color: currentColor; }
+.nl-how em { font-style: normal; color: var(--txt-dim); }
 
 /* ---- direction legend -------------------------------------------------- */
 .an-legend {

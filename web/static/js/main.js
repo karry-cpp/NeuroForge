@@ -11,8 +11,9 @@ import { Circuits } from './circuits.js';
 import { Chat } from './chat.js';
 import {
   LogDock, Modal, Panel, Timeline, analysisHtml, choicesHtml, edgePanel,
-  groupPanel, honestyHtml, interpretingHtml, networkPanel, proposalsHtml,
-  regionPanel, resultHtml, toast, triggerModalHtml,
+  groupPanel, honestyHtml, interpretingHtml, interpreterHelpHtml,
+  networkPanel, proposalsHtml, regionPanel, resultHtml, toast,
+  triggerModalHtml,
 } from './ui.js';
 
 const $  = (s) => document.querySelector(s);
@@ -882,6 +883,7 @@ function openTrigger() {
   });
 
   wireInterpreter();
+  showInterpreterHelp();
 
   // the trigger itself: light salience, then fire the cascade
   App.viewer.setStructureGlow('amygdala', 1.0);
@@ -952,7 +954,9 @@ function wireInterpreter() {
     App.lastAnalysis = null;        // stale result must not outlive its entry
     App.lastLit = null;
     out.classList.remove('hidden');
-    out.innerHTML = interpretingHtml('Matching against the 16 known events');
+    out.innerHTML = interpretingHtml(
+      App.llm?.enabled ? 'Reading your entry'
+                       : 'Matching phrases against the 16 known events');
     try {
       const r = await API.interpret(text);
       const interp = r.interpretation;
@@ -986,6 +990,35 @@ function wireInterpreter() {
   $('#nlText').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) go.click();
   });
+}
+
+/**
+ * Say which of the two interpreters is actually going to run, and how to
+ * change that.
+ *
+ * Asked for on every open rather than cached in the page: the user may have
+ * started LM Studio since last time, and a panel that still claimed "no
+ * model" would be wrong in the one direction that matters. The server side
+ * caches the port probe, so repeat opens are free.
+ *
+ * It also warms that cache, which is why this is called on open and not
+ * lazily when the disclosure is expanded - the first Interpret then does not
+ * pay for the probe.
+ */
+async function showInterpreterHelp() {
+  const host = $('#nlHow');
+  if (!host) return;
+  host.innerHTML = interpreterHelpHtml(App.llm || null);
+  let cfg = null;
+  try {
+    cfg = (await API.interpretConfig()).llm;
+  } catch {
+    cfg = { enabled: false };     // unreachable server: the offline path is
+  }                               // what they will get, so say so
+  App.llm = cfg;
+  // The dock may have been closed, or reopened, while that was in flight.
+  const now = $('#nlHow');
+  if (now) now.innerHTML = interpreterHelpHtml(cfg);
 }
 
 /**

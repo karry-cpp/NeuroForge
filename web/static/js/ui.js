@@ -292,9 +292,113 @@ export function triggerModalHtml() {
 
     <div id="nlOut" class="nl-out hidden"></div>
 
+    <div id="nlHow" class="nl-how"></div>
+
     <details id="pickWrap" class="nl-pick" open>
       <summary><span>or choose directly</span></summary>
       <div id="choiceHost"></div>
+    </details>`;
+}
+
+
+/**
+ * Explain how the interpreter reads an entry, and how to give it a model.
+ *
+ * Shown collapsed. The point is that the two paths are not equivalent and
+ * the user should be able to tell which one they are on: a language model
+ * reads the sentence, the offline fallback only matches phrases. Saying so
+ * plainly is the same reason proposals carry a confidence.
+ *
+ * `cfg` is llm_config(); null while it is still being fetched.
+ */
+export function interpreterHelpHtml(cfg) {
+  const on = !!cfg?.enabled;
+  const model = cfg?.model || '';
+  const runner = cfg?.runner === 'lmstudio' ? 'LM Studio'
+               : cfg?.runner === 'ollama' ? 'Ollama' : '';
+
+  const status = on
+    ? `<span class="nl-how-dot on"></span>
+       <b>Model connected</b>
+       <i>${runner ? runner + ' &middot; ' : ''}${model}</i>`
+    : `<span class="nl-how-dot"></span>
+       <b>No model connected</b>
+       <i>using phrase matching</i>`;
+
+  return `
+    <div class="nl-how-status">${status}</div>
+    <p class="nl-how-lead">
+      This interpreter prefers a language model. It reads your entry, works
+      out what happened, and sorts it into one of the events this simulation
+      already knows &mdash; it never invents an effect, and nothing is
+      recorded until you press a suggestion.
+      ${on ? '' : `Without a model it falls back to matching phrases, which
+      is cruder: it can tell that a word appeared, not what you meant, so its
+      confidence is capped at 62%.`}
+    </p>
+
+    <details class="nl-how-more">
+      <summary><span>${on ? 'How this is set up'
+                          : 'How to connect a language model'}</span></summary>
+      <div class="nl-how-body">
+        <p class="nl-how-note">
+          The model runs on your own machine. Nothing in your entries leaves
+          it, and there is no account or API key to obtain.
+        </p>
+        <ol class="nl-how-steps">
+          <li>
+            <b>Install a local model runner.</b>
+            <span>Either <a href="https://lmstudio.ai" target="_blank"
+              rel="noopener">LM Studio</a> or
+              <a href="https://ollama.com" target="_blank"
+              rel="noopener">Ollama</a>. Both are free desktop apps.</span>
+          </li>
+          <li>
+            <b>Download a model.</b>
+            <span>This app was built and tested against
+              <code>qwen/qwen3-4b</code> &mdash; about 2.5&nbsp;GB, and it
+              classifies an entry in well under a second. Anything larger
+              works, but is slower for no measurable gain here.</span>
+          </li>
+          <li>
+            <b>Start the local server.</b>
+            <span>In LM Studio, load the model and switch on the
+              <em>Developer &rarr; Local Server</em> tab (port
+              <code>1234</code>). Ollama serves on <code>11434</code> as soon
+              as it is running.</span>
+          </li>
+          <li>
+            <b>Reopen this panel.</b>
+            <span>NeuroForge checks both ports itself. There is nothing to
+              configure and no restart needed.</span>
+          </li>
+        </ol>
+
+        <div class="nl-how-sub">Pointing it somewhere else</div>
+        <p class="nl-how-note">
+          Any OpenAI-compatible server works &mdash; llama.cpp, Groq,
+          OpenRouter. Set these in your environment before starting the app;
+          they are never written to disk by NeuroForge.
+        </p>
+        <ul class="nl-how-env">
+          <li><code>NEUROFORGE_LLM_BASE</code>
+              <span>base URL, e.g. <code>http://127.0.0.1:8080/v1</code></span></li>
+          <li><code>NEUROFORGE_LLM_MODEL</code>
+              <span>model name to request</span></li>
+          <li><code>NEUROFORGE_LLM_KEY</code>
+              <span>only needed by a hosted provider</span></li>
+          <li><code>NEUROFORGE_LLM=off</code>
+              <span>skip the check entirely and stay on phrase matching</span></li>
+        </ul>
+
+        <div class="nl-how-sub">What the model is not allowed to do</div>
+        <p class="nl-how-note">
+          It may only choose from a fixed list of events. It cannot invent an
+          event, and it has no say in what any event does to the simulation
+          &mdash; those effects come from stated rules you can read. An
+          unrecognised answer is discarded rather than guessed at.
+        </p>
+      </div>
     </details>`;
 }
 

@@ -290,7 +290,7 @@ python -m neuroforge --no-browser       # serve only, port 8770
 python -m neuroforge --rebuild          # force scene rebuild
 python -m neuroforge --cli              # text prototype
 python -m neuroforge.anatomy.fetch      # download real anatomy
-python -m unittest discover -s tests    # 27 tests
+python -m unittest discover -s tests    # 51 tests
 ```
 
 ### Browser testing (this is how rendering bugs get caught)
@@ -304,6 +304,25 @@ node scripts/smoketest.js http://127.0.0.1:8770/
 ```
 
 Expected: `BOOT: ok`, `cortexTris: 163840`, `structures: 13`, `ERRORS: 0`.
+
+### Check which server you are actually talking to
+
+`HTTPServer` sets `allow_reuse_address = 1`, and on Windows that lets a second
+process **bind a port another process is already listening on**. The newcomer
+prints "listening on http://127.0.0.1:8770/" and then receives nothing; the
+older process keeps serving. A whole round of browser measurements was taken
+against pre-edit code this way, and the symptoms - a 404 on a route that
+plainly exists, plus behaviour matching the previous commit - looked like two
+unrelated bugs in the new work.
+
+Before believing any browser result, confirm there is exactly one listener and
+that it started after your last edit:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8770 -State Listen |
+  ForEach-Object { Get-Process -Id $_.OwningProcess } |
+  Select-Object Id, StartTime
+```
 
 ---
 
@@ -361,6 +380,21 @@ Expected: `BOOT: ok`, `cortexTris: 163840`, `structures: 13`, `ERRORS: 0`.
    that writes depth, with each pass discarding the other's fragments. This
    is the same reason subcortical structures always looked solid - they are
    opaque meshes that write depth.
+11. **A cache that cannot represent a miss re-probes forever.** `discover`
+   held `Optional[dict]` and tested `_CACHE is not None`, so "no runner
+   found" was indistinguishable from "nothing cached yet". Every single
+   interpret paid two socket timeouts - three seconds - on any machine
+   without a model server, and the *answer was still correct*, which is why
+   it survived so long. Fixed with an `_UNSET` sentinel. Probe timeout is
+   now 0.5s: a running localhost server answers in milliseconds, so the old
+   1.5s was only ever charged to people who did not have one.
+12. **The keyword fallback had no cue for "angry" or "skipped".** The most
+   obvious sentence a first-time user types - "I got angry at my manager" -
+   matched nothing at all, and the panel said so. When widening `_CUES`,
+   check the negation cases still hold (`didn't get angry` is a
+   `regulated_success`) and that longer, more specific cues still win on the
+   `len(cue)/100` tie-break (`made the call i was dreading` must stay
+   `exposure`, not `avoidance`). Both are tested.
 
 ---
 
@@ -536,7 +570,7 @@ Verified when this landed: 8 concurrent `/api/scene` requests overlapped 5.3×;
 
 **Working:** real anatomy, all three modes, view presets, picking, circuits
 with GPU-driven thickness, timeline scrubbing, logging with per-pathway delta
-readout, save/load, 27/27 tests passing, 0 console errors.
+readout, save/load, 51/51 tests passing, 0 console errors.
 
 **Superseded:** `neuroforge/ui/` is the original Tkinter dashboard. It still
 runs but is no longer the product. Treat as legacy.

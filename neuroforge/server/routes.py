@@ -212,6 +212,18 @@ def _log(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+@API.get("/api/sim/interpret/config")
+def _interpret_config(_: Dict[str, Any]) -> Dict[str, Any]:
+    """Whether a model is reachable, so the panel can say so before it is used.
+
+    Called when the log surface opens. That also warms discover's cache, so
+    the first Interpret does not pay for the port probe.
+
+    Not @guarded: it never touches SIM.
+    """
+    return {"llm": llm_config()}
+
+
 @API.post("/api/sim/interpret")
 def _interpret(payload: Dict[str, Any]) -> Dict[str, Any]:
     """

@@ -130,10 +130,19 @@ _CUES: Dict[str, List[str]] = {
     "avoidance": [
         "avoided", "cancelled", "canceled", "put it off", "procrastinat",
         "didn't go", "did not go", "backed out", "dodged",
+        "skipped", "dreading", "dreaded", "bailed", "made an excuse",
+        "stayed home", "called in sick", "pulled out of", "didn't show",
+        "did not show", "couldn't face", "could not face", "chickened out",
     ],
     "reactive_outburst": [
         "lost my temper", "snapped at", "shouted", "yelled", "lashed out",
         "blew up", "reacted badly", "said something i regret",
+        # Plain "angry" was missing entirely, so the most obvious sentence a
+        # first-time user types matched nothing at all. The negator check
+        # keeps "didn't get angry" out of here.
+        "got angry", "was angry", "so angry", "really angry", "angry at",
+        "furious", "raged", "went off at", "snapped", "swore at",
+        "lost it with", "kicked off",
     ],
     "sleep_good": [
         "slept well", "good sleep", "rested well", "full night",

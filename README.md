@@ -141,13 +141,15 @@ neuroforge/
   model.py      dual-rate plasticity + homeostatic competition
   events.py     16 loggable behaviours
   interpret.py  free text -> suggested events (classifier only)
+  discover.py   finds a local model server, or decides there isn't one
+  analyse.py    explains what an entry engages (anatomy derived, prose written)
   llm.py        retrieval + streaming chat, grounded in the above
   engine.py     simulation, history, replay, save/load
   server/       stdlib HTTP server + JSON API
   ui/           legacy Tkinter dashboard (superseded)
 web/            Three.js renderer
 scripts/        headless browser tests
-tests/          27 tests
+tests/          51 tests
 ```
 
 The simulation never imports the renderer. `anatomy/anchors.py` is the single
@@ -155,27 +157,53 @@ bridge mapping simulation node ids to 3-D coordinates.
 
 ---
 
-## The assistant (optional)
+## The language model (optional)
 
-There is a chat panel that explains what you are looking at and can highlight
-regions in the 3-D view while it answers. It is **off by default** and needs
-no account: point it at any OpenAI-compatible server and it works.
+A model is used in two places: a chat panel that explains what you are looking
+at and can highlight regions while it answers, and the interpreter that reads
+a logged experience and works out which event it describes.
+
+There is no account and no API key. If LM Studio or Ollama is already running,
+NeuroForge finds it on its usual port and uses it &mdash; starting one of them
+is the entire setup.
 
 ```powershell
-$env:NEUROFORGE_LLM_BASE  = "http://127.0.0.1:11434/v1"   # Ollama
-$env:NEUROFORGE_LLM_MODEL = "qwen3:8b"
+# nothing to configure; just have a model loaded and serving
 python -m neuroforge
 ```
 
-llama.cpp's `llama-server`, LM Studio and vLLM all expose the same shape; only
-the port differs. With nothing configured the panel says so plainly and the
-rest of the application is unaffected.
+Built and tested against **`qwen/qwen3-4b`** (about 2.5 GB), which classifies
+an entry in well under a second. Larger models are slower here for no
+measurable gain; very small ones get it wrong.
+
+To point somewhere else &mdash; llama.cpp's `llama-server`, vLLM, Groq,
+OpenRouter, anything OpenAI-compatible:
+
+```powershell
+$env:NEUROFORGE_LLM_BASE  = "http://127.0.0.1:8080/v1"
+$env:NEUROFORGE_LLM_MODEL = "your-model"
+$env:NEUROFORGE_LLM_KEY   = "..."     # hosted providers only
+```
+
+To skip the check altogether and stay on the offline path, set
+`$env:NEUROFORGE_LLM = "off"` instead.
+
+### Without a model
+
+Everything still works. The chat panel says plainly that nothing is connected,
+and the interpreter falls back to matching phrases. That fallback is
+deliberately crude and **caps its own confidence at 62%**: a keyword hit is
+evidence that a word appeared, not evidence that you meant it. It does check
+for negation, because "didn't get angry" is a regulated success and a naive
+matcher would record the opposite of what happened.
 
 Two deliberate limits:
 
 **It cannot change anything.** Free text becomes a *proposal* you confirm.
 Unknown event ids are discarded rather than coerced, so a hallucination cannot
-become a change in your record. There is no "log this for me" tool.
+become a change in your record. There is no "log this for me" tool. The model
+also has no say in what an event *does* to the simulation &mdash; those effects
+come from fixed rules you can read.
 
 **It is given text, not trusted to recall.** Only the regions your question
 mentions are retrieved (typically 300-600 tokens), and the model is instructed
