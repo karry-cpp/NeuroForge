@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import json
 import os
+import random
 from dataclasses import dataclass, field, asdict
 from datetime import date, timedelta
 from typing import Callable, Dict, List, Optional
 
 from .atlas import PATHWAYS
 from .events import EVENTS_BY_ID, EventType, arousal_gain, sleep_gain
-from .model import (Connectome, alignment, per_pathway_progress, progress)
+from .model import (PARAMS, Connectome, alignment, per_pathway_progress,
+                    progress)
 
 
 @dataclass
@@ -45,9 +47,15 @@ class DaySnapshot:
 class Simulation:
     """The whole simulated organism."""
 
-    def __init__(self, start_date: Optional[date] = None):
+    def __init__(self, start_date: Optional[date] = None,
+                 seed: Optional[int] = None):
         self.current = Connectome()
+        self.current.equilibrate()
         self.target = Connectome.target_brain()
+        # Pass a seed to make a run reproducible. Tests that compare two
+        # simulations must use the same one, or they are comparing two
+        # different sequences of luck.
+        self.rng = random.Random(seed)
         self.day: int = 0
         self.start_date: date = start_date or date.today()
         self.stress: float = 0.35
@@ -87,7 +95,8 @@ class Simulation:
         if ev.activations:
             reps = self._reps_today.get(ev.id, 0)
             lr = (ev.lr_mult * self._today_lr_bonus
-                  * arousal_gain(self.stress) * sleep_gain(self.sleep))
+                  * arousal_gain(self.stress) * sleep_gain(self.sleep)
+                  * self._practice_gain())
             acts = {k: v * intensity for k, v in ev.activations.items()}
             self.current.apply_practice(acts, lr_mult=lr,
                                         repetitions_today=reps,
@@ -99,6 +108,21 @@ class Simulation:
         self._record(replace=True)
         self._emit()
         return ev
+
+    def _practice_gain(self) -> float:
+        """How well this particular repetition landed.
+
+        Attention, motivation, how safe the room felt - none of it is logged,
+        all of it matters. Without this the model claims that identical
+        adherence produces an identical brain, which is the least true thing
+        it could say. Mean is 1.0, so this widens the distribution rather
+        than shifting it.
+        """
+        v = PARAMS.session_variance
+        if v <= 0:
+            return 1.0
+        g = self.rng.lognormvariate(-0.5 * v * v, v)
+        return max(1.0 - 2.2 * v, min(1.0 + 3.0 * v, g))
 
     def advance_day(self, n: int = 1) -> None:
         for _ in range(n):

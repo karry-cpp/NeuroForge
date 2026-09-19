@@ -26,6 +26,7 @@ export const API = {
   log:      (event, opts = {}) => jpost('/api/sim/log', { event, ...opts }),
   // Suggests events from free text. Does not change the simulation.
   interpret: (text) => jpost('/api/sim/interpret', { text }),
+  analyse:  (text, events) => jpost('/api/sim/analyse', { text, events }),
   advance:  (days = 1) => jpost('/api/sim/advance', { days }),
   replay:   (day) => jpost('/api/sim/replay', { day }),
   reset:    () => jpost('/api/sim/reset'),

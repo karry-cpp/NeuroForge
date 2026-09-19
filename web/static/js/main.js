@@ -10,13 +10,18 @@ import { Viewer } from './viewer.js';
 import { Circuits } from './circuits.js';
 import { Chat } from './chat.js';
 import {
-  Modal, Panel, Timeline, choicesHtml, edgePanel, groupPanel, honestyHtml,
-  networkPanel, proposalsHtml, regionPanel, resultHtml, toast,
-  triggerModalHtml,
+  LogDock, Modal, Panel, Timeline, analysisHtml, choicesHtml, edgePanel,
+  groupPanel, honestyHtml, interpretingHtml, networkPanel, proposalsHtml,
+  regionPanel, resultHtml, toast, triggerModalHtml,
 } from './ui.js';
 
 const $  = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
+
+// Unrelated pathways drop to this; the engaged ones sit above their normal
+// alpha so the result reads as "these lit up", not "the brain went dark".
+const FOCUS_ON = 1.6;
+const FOCUS_OFF = 0.10;
 
 /* ------------------------------------------------------------------------
  * Sidebar focus.
@@ -112,7 +117,7 @@ async function boot() {
 
     step('laying out functional pathways…', 76);
   App.circuits = new Circuits(App.viewer);
-  App.circuits.build(App.model);
+  App.circuits.build(App.model, App.scene);
   // The viewer owns picking, so it needs to know about the circuits to be
   // able to hit-test them. Without this the `this.circuits?.` guard in
   // _pick() is always falsy and pathways are silently unclickable.
@@ -216,11 +221,13 @@ function wire() {
   });
 
   /* ---- toggles ---- */
-  $('#chkXray').onchange    = (e) => { V.forceSolid = !e.target.checked;
-                                       V.setXray(e.target.checked, true); };
+  $('#chkXray').onchange    = (e) => V.setXray(e.target.checked, true);
   $('#chkSubcort').onchange = (e) => V.setSubcortical(e.target.checked);
   $('#chkLabels').onchange  = (e) => V.setPins(e.target.checked);
   $('#chkSpin').onchange    = (e) => V.setAutoRotate(e.target.checked);
+
+  /* ---- appearance sliders ---- */
+  wireLookControls();
 
   /* ---- structure list ---- */
   buildDock();
@@ -252,13 +259,13 @@ function wire() {
   // Closing the panel keeps the highlight. The usual reason to dismiss it is
   // to look at the region it was covering.
   $('#panelClose').onclick  = () => Panel.close();
+  $('#logClose').onclick    = () => { endPreview(); LogDock.close(); };
   $('#btnChat').onclick     = () => App.chat?.toggle();
   $('#chatClose').onclick   = () => App.chat?.close();
   $('#modalClose').onclick  = Modal.close;
   $('#modalWrap').onclick   = (e) => {
     if (e.target.id === 'modalWrap') Modal.close();
   };
-  $('#stripHide').onclick   = () => $('#strip').classList.add('hidden');
 
   /* ---- timeline ---- */
   App.timeline = new Timeline($('#tlCanvas'), scrubTo);
@@ -276,10 +283,16 @@ function wire() {
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (Modal.isOpen()) Modal.close();
+      else if (LogDock.isOpen()) { endPreview(); LogDock.close(); }
       else if (Panel.isOpen()) Panel.close();
       else if (V.selected) clearSelection();
     }
-    if (e.target.tagName === 'INPUT') return;
+    // Anywhere the user can type. Guarding only INPUT meant the log dock's
+    // <textarea> swallowed every space into the replay toggle, and typing a
+    // digit switched mode out from under the sentence being written.
+    const t = e.target;
+    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+        || t.tagName === 'SELECT' || t.isContentEditable) return;
     const k = e.key.toLowerCase();
     if (k === '1') setMode('anatomy');
     if (k === '2') setMode('circuits');
@@ -339,6 +352,44 @@ function showNetwork(id) {
   const n = (App.scene.networks || []).find(x => x.id === id);
   if (!n) return;
   Panel.open(networkPanel(n, App.scene.network_caveat));
+}
+
+/* Appearance sliders. 100% is exactly the shipped look, so the defaults are
+ * not a preference - they are the calibrated values. Persisted per browser. */
+const LOOK_KEY = 'nf.look';
+const LOOK_DEFAULT = { ghost: 100, hi: 100 };
+
+function wireLookControls() {
+  let saved = LOOK_DEFAULT;
+  try {
+    saved = { ...LOOK_DEFAULT, ...JSON.parse(localStorage.getItem(LOOK_KEY)) };
+  } catch { /* corrupt or unavailable storage falls back to defaults */ }
+
+  const ghost = $('#rngGhost'), hi = $('#rngHi');
+
+  const apply = (persist) => {
+    const g = Number(ghost.value), h = Number(hi.value);
+    $('#ghostVal').textContent = g + '%';
+    $('#hiVal').textContent = h + '%';
+    App.viewer.setGhostAlpha(g / 100);
+    App.viewer.setHighlight(h / 100);
+    if (persist) {
+      try { localStorage.setItem(LOOK_KEY, JSON.stringify({ ghost: g, hi: h })); }
+      catch { /* private mode - the sliders still work for this session */ }
+    }
+  };
+
+  ghost.value = saved.ghost;
+  hi.value = saved.hi;
+  apply(false);
+
+  ghost.oninput = () => apply(true);
+  hi.oninput = () => apply(true);
+  $('#btnResetLook').onclick = () => {
+    ghost.value = LOOK_DEFAULT.ghost;
+    hi.value = LOOK_DEFAULT.hi;
+    apply(true);
+  };
 }
 
 /** Drop the highlight and un-light whichever dock row pointed at it. */
@@ -515,14 +566,9 @@ function setMode(mode) {
   $('#metricWrap').style.opacity = sim ? '1' : '.32';
 
   if (mode === 'anatomy') {
-    $('#chkXray').checked = false;
-    App.viewer.forceSolid = true;
     Panel.close();
-    App.viewer.select(null);
+    clearSelection();
     App.circuits.clearPulses();
-  } else {
-    $('#chkXray').checked = true;
-    App.viewer.forceSolid = false;
   }
 
   if (mode === 'circuits') {
@@ -565,14 +611,39 @@ function setViewState(s) {
 /*  STATE APPLICATION                                                       */
 /* ======================================================================= */
 
+/* The model resolves this to about a fifth of the range, not to a tenth of a
+ * percent, so the headline says what it actually knows. */
+function progressBand(pct) {
+  if (pct < -2) return 'moving away';
+  if (pct < 5) return 'just started';
+  if (pct < 20) return 'early days';
+  if (pct < 45) return 'some of the way';
+  if (pct < 70) return 'over halfway';
+  if (pct < 90) return 'most of the way';
+  return 'at target';
+}
+
 function applyState(s = App.state) {
   App.state = s;
   $('#dayNum').textContent = App.replayDay ?? s.day;
   $('#practiceNum').textContent = s.total_practices;
   $('#streakNum').textContent = s.streak;
-  const pct = (s.alignment * 100);
-  $('#alignBar').style.width = pct + '%';
-  $('#alignVal').textContent = pct.toFixed(1) + '%';
+  // Fraction of the day-0 gap closed, not raw similarity to the target. The
+  // old metric opened at 58.7% on a fresh simulation, because an ordinary
+  // brain already partly resembles the target - which read as though the user
+  // had started more than halfway done.
+  const pct = (s.progress * 100);
+  $('#alignBar').style.width = Math.max(0, Math.min(100, pct)) + '%';
+  const band = progressBand(pct);
+  $('#alignBand').textContent = band;
+  $('#alignBand').classList.toggle('negative', pct < -0.05);
+  // Rounded to 5: the model does not know this to a tenth of a percent, and
+  // printing "69.6%" claims that it does. Small non-zero values get "<5%"
+  // rather than "~0%", which would read as "nothing happened".
+  $('#alignVal').textContent =
+    Math.abs(pct) < 0.05 ? ''
+    : Math.abs(pct) < 2.5 ? (pct > 0 ? '<5%' : '>-5%')
+    : `~${Math.round(pct / 5) * 5}%`;
   $('#tlDay').textContent = `day ${App.replayDay ?? s.day}`;
   App.timeline.set(s, App.replayDay);
   refreshCompareOptions();
@@ -776,11 +847,39 @@ function highlightNodes(nodeIds) {  if (!nodeIds.length || App.mode === 'anatomy
 function openTrigger() {
   if (App.mode !== 'simulation') setMode('simulation');
   goLive();
-  Modal.open(triggerModalHtml());
+  App.chat?.close();
+  App.lastLit = null;
+  App.lastAnalysis = null;
+  LogDock.open(triggerModalHtml());
   $('#choiceHost').innerHTML =
     choicesHtml(App.model.events, App.model.categories);
-  $$('#choiceHost .choice').forEach(b =>
-    b.onclick = () => doLog(b.dataset.event));
+
+  // Hovering a response shows what it engages, before committing to it. The
+  // dock leaves the brain visible, which is the whole reason this stopped
+  // being a modal.
+  //
+  // Previews stay disarmed until the pointer actually moves: the dock slides
+  // in under a stationary cursor, and the button that lands beneath it fires
+  // mouseenter on its own. That dimmed every other pathway to 0.16 the
+  // instant the panel opened, which read as a flicker.
+  let armed = false;
+  $('#logdock').addEventListener('pointermove', () => { armed = true; },
+                                 { once: true });
+
+  $$('#choiceHost .choice').forEach(b => {
+    const ev = App.eventById[b.dataset.event];
+    b.onclick = () => doLog(b.dataset.event);
+    b.onmouseenter = b.onfocus = () => {
+      if (!armed) return;
+      b.classList.add('previewing');
+      previewEvent(ev);
+    };
+    b.onmouseleave = b.onblur = () => {
+      if (!armed) return;
+      b.classList.remove('previewing');
+      endPreview();
+    };
+  });
 
   wireInterpreter();
 
@@ -789,6 +888,48 @@ function openTrigger() {
   App.circuits.cascade(
     ['BLA->CeA', 'BLA->dACC'], { stagger: 0.18, speed: 1.8 });
   setTimeout(() => App.viewer.setStructureGlow('amygdala', 0.35), 1600);
+}
+
+/** Which structures, regions and pathways an event's rule touches. */
+function eventTargets(ev) {
+  const acts = ev?.activations || {};
+  const edges = [], pathways = [], lit = [];
+  for (const e of App.model.edges) {
+    const a = acts[e.pathway];
+    if (!a) continue;
+    if (!pathways.includes(e.pathway)) pathways.push(e.pathway);
+    if (a > 0) edges.push(e.id);
+    for (const nid of [e.src, e.dst]) {
+      const n = App.nodeById[nid];
+      if (n) lit.push([n, Math.abs(a)]);
+    }
+  }
+  return { edges, pathways, lit };
+}
+
+/** Show an event's reach without applying it. */
+function previewEvent(ev) {
+  if (!ev) return;
+  const { pathways, lit } = eventTargets(ev);
+  App.viewer.clearGlow();
+  for (const [n, a] of lit) {
+    const g = Math.min(1, a) * 0.7;
+    if (n.structure) App.viewer.setStructureGlow(n.structure, g);
+    if (n.cortex) {
+      const r = App.cortexById[n.cortex];
+      if (r) App.viewer.setRegionGlow(r.label_index, g);
+    }
+  }
+  App.circuits.focus(pathways.length ? pathways : null);
+}
+
+function endPreview() {
+  App.viewer.clearGlow();
+  // Fall back to the interpreted entry's lighting rather than to nothing,
+  // or hovering a choice once would wipe the result the user is reading.
+  if (App.lastAnalysis) { highlightAnalysis(App.lastAnalysis); return; }
+  if (App.lastLit?.length) { lightFor(App.lastLit); return; }
+  App.circuits.focus(null);
 }
 
 /**
@@ -806,9 +947,12 @@ function wireInterpreter() {
     const text = $('#nlText').value.trim();
     if (!text) { $('#nlText').focus(); return; }
     go.disabled = true;
-    go.textContent = 'Readingâ€¦';
+    go.classList.add('is-busy');
+    go.textContent = 'Reading';
+    App.lastAnalysis = null;        // stale result must not outlive its entry
+    App.lastLit = null;
     out.classList.remove('hidden');
-    out.innerHTML = '<div class="nl-empty">Interpretingâ€¦</div>';
+    out.innerHTML = interpretingHtml('Matching against the 16 known events');
     try {
       const r = await API.interpret(text);
       const interp = r.interpretation;
@@ -821,12 +965,20 @@ function wireInterpreter() {
       $$('#nlOut .nl-prop').forEach(b => b.onclick = () => {
         doLog(b.dataset.event, parseFloat(b.dataset.intensity) || 1.0, text);
       });
+      const ids = interp.proposals.map(p => p.event).slice(0, 2);
+      // Light the brain from the proposals immediately: classification takes
+      // well under a second, the prose does not, and waiting for the prose
+      // would leave the brain inert while the user is reading the result.
+      lightFor(ids);
+      if (ids.length) $('#pickWrap')?.removeAttribute('open');
+      showAnalysis(text, ids);
     } catch (e) {
       out.innerHTML =
         `<div class="nl-empty">Could not interpret that (${e.message}).
          Pick an event below instead.</div>`;
     } finally {
       go.disabled = false;
+      go.classList.remove('is-busy');
       go.textContent = 'Interpret';
     }
   };
@@ -836,15 +988,120 @@ function wireInterpreter() {
   });
 }
 
+/**
+ * Fetch the reading and light up what it names.
+ *
+ * Runs after the proposals are already on screen: it is the slow call, and
+ * making the user wait for prose before seeing the classification would
+ * make the whole box feel broken on a cold model.
+ */
+async function showAnalysis(text, eventIds) {
+  const out = $('#nlOut');
+  if (!out || !eventIds.length) return;
+  const slot = document.createElement('div');
+  slot.className = 'an-slot';
+  slot.innerHTML = interpretingHtml('Working out what it engages');
+  out.appendChild(slot);
+  try {
+    const r = await API.analyse(text, eventIds);
+    const a = r.analysis;
+    slot.innerHTML = analysisHtml(a);
+    App.lastAnalysis = a;
+    highlightAnalysis(a);
+  } catch (e) {
+    slot.remove();
+  }
+}
+
+/**
+ * Brighten what an entry engages, straight from the event rules.
+ *
+ * Same treatment as hovering a response, but driven by the classifier, so
+ * the brain reacts the moment the entry is understood.
+ */
+function lightFor(eventIds) {
+  const evs = eventIds.map(id => App.eventById[id]).filter(Boolean);
+  if (!evs.length) return;
+  App.lastLit = eventIds;
+  App.viewer.clearGlow();
+  const pathways = new Set();
+  const best = new Map();
+  for (const ev of evs) {
+    const { pathways: ps, lit } = eventTargets(ev);
+    ps.forEach(p => pathways.add(p));
+    for (const [n, a] of lit) {
+      if (!best.has(n) || best.get(n) < a) best.set(n, a);
+    }
+  }
+  for (const [n, a] of best) {
+    const g = Math.min(1, a) * 0.85;
+    if (n.structure) App.viewer.setStructureGlow(n.structure, g);
+    if (n.cortex) {
+      const r = App.cortexById[n.cortex];
+      if (r) App.viewer.setRegionGlow(r.label_index, g);
+    }
+  }
+  App.circuits.focus(pathways.size ? [...pathways] : null);
+}
+
+/**
+ * Light the regions, structures and pathways the rules derived for this entry.
+ *
+ * Establishes the whole lit state in one call so it can be replayed after a
+ * hover preview ends, without depending on what ran before it.
+ */
+function highlightAnalysis(a) {
+  if (!a) return;
+  const pids = (a.pathways || []).map(p => p.id);
+
+  // Strongest engagement wins per node, so a part carrying two pathways
+  // glows for the bigger of them rather than the last one read.
+  const best = new Map();
+  for (const p of a.pathways || []) {
+    const amt = Math.min(1, Math.abs(p.amount));
+    for (const e of App.model.edges) {
+      if (e.pathway !== p.id) continue;
+      for (const nid of [e.src, e.dst]) {
+        if (!(best.get(nid)?.amt >= amt)) best.set(nid, { amt });
+      }
+    }
+  }
+
+  const labels = [];
+  for (const rid of a.regions || []) {
+    const r = App.cortexById[rid];
+    if (r) labels.push(r.label_index);
+  }
+  const structs = (a.structures || []).filter(s => App.structById?.[s]);
+  if (!labels.length && !structs.length && !pids.length) return;
+
+  App.viewer.selectMany(labels, structs, null);
+  App.viewer.clearGlow();
+  for (const [nid, { amt }] of best) {
+    const n = App.nodeById[nid];
+    if (!n) continue;
+    const g = amt * 0.9;
+    if (n.structure) App.viewer.setStructureGlow(n.structure, g);
+    if (n.cortex) {
+      const r = App.cortexById[n.cortex];
+      if (r) App.viewer.setRegionGlow(r.label_index, g);
+    }
+  }
+  App.circuits.focus(pids.length ? pids : null, FOCUS_ON, FOCUS_OFF);
+}
+
 async function doLog(eventId, intensity = 1.0, note = '') {
   const ev = App.eventById[eventId];
+  endPreview();
   const res = await API.log(eventId, { intensity, note });
   applyState(res.state);
 
   animateResponse(ev);
-  Modal.open(resultHtml(res.applied, res.deltas, res.state));
+  // Rendered in place: the cascade above is playing on the brain right now,
+  // and a dialog would be sitting on top of it.
+  LogDock.set(resultHtml(res.applied, res.deltas, res.state));
   $('#againBtn').onclick = openTrigger;
-  $('#nextDayBtn').onclick = async () => { Modal.close(); await advance(1); };
+  $('#nextDayBtn').onclick = async () => { await advance(1); };
 
   const top = res.deltas[0];
   if (top) {
@@ -857,20 +1114,12 @@ async function doLog(eventId, intensity = 1.0, note = '') {
 /** Light the structures and fire pulses down the pathways the event used. */
 function animateResponse(ev) {
   App.viewer.clearGlow();
-  const acts = ev.activations || {};
-  const edges = [];
-  for (const e of App.model.edges) {
-    const a = acts[e.pathway];
-    if (!a || a <= 0) continue;
-    edges.push(e.id);
-    for (const nid of [e.src, e.dst]) {
-      const n = App.nodeById[nid];
-      if (!n) continue;
-      if (n.structure) App.viewer.setStructureGlow(n.structure, Math.abs(a));
-      if (n.cortex) {
-        const r = App.cortexById[n.cortex];
-        if (r) App.viewer.setRegionGlow(r.label_index, Math.abs(a));
-      }
+  const { edges, lit } = eventTargets(ev);
+  for (const [n, a] of lit) {
+    if (n.structure) App.viewer.setStructureGlow(n.structure, a);
+    if (n.cortex) {
+      const r = App.cortexById[n.cortex];
+      if (r) App.viewer.setRegionGlow(r.label_index, a);
     }
   }
   App.circuits.cascade(edges, { stagger: 0.13, speed: 1.35 });

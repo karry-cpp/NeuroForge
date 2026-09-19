@@ -56,11 +56,12 @@
     <span class="daybox"><b id="streakNum">0</b><i>streak</i></span>
   </div>
 
-  <div class="metric" id="metricWrap" title="Similarity between the simulated
-current state and your chosen target state. A model value.">
-    <div class="metric-label">CURRENT → TARGET</div>
+  <div class="metric" id="metricWrap" title="How much of the day-0 distance
+to your chosen target has been closed. Starts at 0% and can go negative if
+things move backwards. A model value, not a measurement.">
+    <div class="metric-label">GAP CLOSED</div>
     <div class="metric-bar"><i id="alignBar"></i></div>
-    <div class="metric-val"><b id="alignVal">—</b></div>
+    <div class="metric-val"><b id="alignBand">—</b><i id="alignVal"></i></div>
   </div>
 
   <div class="topright">
@@ -70,15 +71,6 @@ current state and your chosen target state. A model value.">
     <button class="ghost" id="btnMenu" title="Session">⋯</button>
   </div>
 </header>
-
-<!-- =========================== DISCLOSURE STRIP ========================= -->
-<div id="strip">
-  <span class="dot"></span>
-  Educational simulation. Glowing pathways visualise <b>simulated pathway
-  strength</b> — a number in this program — not measurements of your neurons,
-  synapses, gray matter or brain activity.
-  <button id="stripHide">dismiss</button>
-</div>
 
 <!-- ============================ LEFT DOCK ============================== -->
 <aside id="leftdock">
@@ -105,6 +97,21 @@ current state and your chosen target state. A model value.">
     <label class="check"><input type="checkbox" id="chkLabels" checked>
       Labels</label>
     <label class="check"><input type="checkbox" id="chkSpin"> Auto-rotate</label>
+  </div>
+
+  <div class="dockgroup">
+    <div class="docktitle">Appearance</div>
+    <label class="slider">
+      <span>Unselected <i id="ghostVal">100%</i></span>
+      <input type="range" id="rngGhost" min="0" max="200" step="5" value="100"
+             title="How visible everything you have not selected stays">
+    </label>
+    <label class="slider">
+      <span>Highlight <i id="hiVal">100%</i></span>
+      <input type="range" id="rngHi" min="0" max="200" step="5" value="100"
+             title="How strongly the selected region reads">
+    </label>
+    <button class="linkbtn" id="btnResetLook">Reset to default</button>
   </div>
 
   <div class="dockgroup">
@@ -201,6 +208,14 @@ current state and your chosen target state. A model value.">
 <aside id="panel" class="hidden">
   <button id="panelClose">&#215;</button>
   <div id="panelBody"></div>
+</aside>
+
+<!-- ============================ LOG SURFACE ============================ -->
+<!-- Docked rather than modal: the whole point of logging is to watch the
+     model respond, which a dialog over the brain made impossible. -->
+<aside id="logdock" class="hidden">
+  <button id="logClose">&#215;</button>
+  <div id="logBody"></div>
 </aside>
 
 <!-- ============================= CHAT PANEL ============================ -->

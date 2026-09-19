@@ -39,6 +39,8 @@ import re
 import urllib.request
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from . import discover
+
 # Hard cap on what we will echo back into a prompt. Prevents a huge pasted
 # journal entry from pushing the grounding text out of the context window.
 MAX_QUESTION = 1200
@@ -290,6 +292,15 @@ def chat_config() -> Dict[str, Any]:
              or os.environ.get("NEUROFORGE_LLM_MODEL") or "").strip()
     key = (os.environ.get("NEUROFORGE_CHAT_KEY")
            or os.environ.get("NEUROFORGE_LLM_KEY") or "")
+    # Nothing configured: look for a local runner on its usual port, so that
+    # starting LM Studio or Ollama is the entire setup.
+    runner = ""
+    if not base:
+        found = discover.find()
+        if found:
+            base = str(found["base"])
+            model = model or str(found["model"])
+            runner = str(found["runner"])
     local = bool(base) and ("127.0.0.1" in base or "localhost" in base
                             or "0.0.0.0" in base)
     return {
@@ -297,6 +308,8 @@ def chat_config() -> Dict[str, Any]:
         "enabled": bool(base) or (provider == "openai" and bool(key)),
         "base": base or "https://api.openai.com/v1",
         "model": model or ("local-model" if local else "gpt-4o-mini"),
+        "runner": runner,
+        "small": discover.small_model(model or ""),
         "key": key,
         "local": local,
         "has_key": bool(key),

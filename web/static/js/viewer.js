@@ -97,6 +97,8 @@ const CORTEX_FRAG = /* glsl */`
   uniform float uDim;           // dim non-highlighted regions
   uniform float uGhostFade;     // 1 = ghosted cortex must also turn see-through
   uniform float uSelLayer;      // 1 = this pass draws ONLY the selection, opaque
+  uniform float uGhostAlpha;    // user control: visibility of everything unselected
+  uniform float uHighlight;     // user control: strength of the selected region
   uniform sampler2D uRegionTex; // RGB = region colour, A = live glow
   uniform sampler2D uSelTex;    // R > 0.5 = this label is currently selected
   uniform sampler2D uNetTex;    // RGB = Yeo network colour
@@ -147,7 +149,7 @@ const CORTEX_FRAG = /* glsl */`
     bool ghosted = (uDim > 0.5) && !isActive;
     if (ghosted) glow = 0.0;
 
-    float tint = glow * 0.55 + (isActive ? 0.50 : 0.0);
+    float tint = glow * 0.55 + (isActive ? 0.50 * uHighlight : 0.0);
     albedo = mix(albedo, rc, clamp(tint, 0.0, 0.9));
     // Tinting mixes toward a single colour, which erases the gyral/sulcal
     // contrast the albedo above was built from. Re-apply it, or a selected
@@ -187,8 +189,8 @@ const CORTEX_FRAG = /* glsl */`
     // active region gets a travelling shimmer so it reads as "selected"
     if (isActive) {
       float band = sin(vWorld.z * 0.09 - uTime * 2.4) * 0.5 + 0.5;
-      lit += rc * band * 0.07;
-      lit += rc * fres * 0.18;
+      lit += rc * band * 0.07 * uHighlight;
+      lit += rc * fres * 0.18 * uHighlight;
     }
 
     // ---- opacity ---------------------------------------------------------
@@ -206,7 +208,7 @@ const CORTEX_FRAG = /* glsl */`
     float ghost = uDim * (isActive ? 0.0 : 1.0);
     if (ghost > 0.0) {
       float lum = dot(lit, vec3(0.299, 0.587, 0.114));
-      vec3 g = mix(vec3(lum), uRimColor, 0.22) * 0.30;
+      vec3 g = mix(vec3(lum), uRimColor, 0.22) * (0.30 * uGhostAlpha);
       lit = mix(lit, g, ghost);
 
       // Only dissolve the shell when the thing being highlighted is INSIDE
@@ -216,9 +218,10 @@ const CORTEX_FRAG = /* glsl */`
       // A flat base alpha plus a wide, low-exponent rim, not a tight edge
       // term: the rim is there to give the shell a shape, and any narrow
       // falloff brings the wire-mesh look straight back.
-      float shell = 0.09 + 0.20 * pow(1.0 - abs(dot(N, V)), 3.0);
+      float shell = (0.09 + 0.20 * pow(1.0 - abs(dot(N, V)), 3.0))
+                    * uGhostAlpha;
       if (!gl_FrontFacing) shell *= 0.45;
-      float clear = mix(1.0, shell, uGhostFade);
+      float clear = mix(1.0, clamp(shell, 0.0, 1.0), uGhostFade);
       a = mix(a, a * clear, ghost);
       // Throwing the invisible fragments away entirely is what makes this
       // work: a fragment that is kept would still write depth and would
@@ -297,6 +300,9 @@ export class Viewer {
     this.showSubcort = true;
     this.autoRotate = false;
     this._camTween = null;
+    this._modeGhost = false;
+    this._netActive = false;
+    this._xrayOn = false;
     this._onPick = () => {};
     this._onHover = () => {};
 
@@ -463,11 +469,12 @@ export class Viewer {
     // thing the user is actually looking at - so they must be clickable
     // rather than being decoration drawn over the anatomy.
     if (this.circuits?.visible) {
-      const id = this.circuits.pickEdge(this.ray);
+      // pickEdge wants the Ray, not the Raycaster that owns it.
+      const id = this.circuits.pickEdge(this.ray.ray);
       if (id) return { kind: 'edge', id };
     }
 
-    // subcortical structures take priority â€” they are small and inside
+    // subcortical structures take priority - they are small and inside
     if (this.showSubcort) {
       const meshes = [...this.structures.values()].filter(m => m.visible);
       const hits = this.ray.intersectObjects(meshes, false);
@@ -560,6 +567,8 @@ export class Viewer {
       uDim:    { value: 0.0 },
       uGhostFade: { value: 0.0 },
       uSelLayer: { value: 0.0 },
+      uGhostAlpha: { value: 1.0 },
+      uHighlight: { value: 1.0 },
       uKeyDir: { value: this.keyDir },
       uRimColor: { value: new THREE.Color(0x8fa6bd) },
       uRegionTex: { value: this.regionTex },
@@ -730,27 +739,55 @@ export class Viewer {
     this.mode = mode;
     const anat = mode === 'anatomy';
     this.cortexUniforms.uOpacity.value = anat ? 1.0 : 0.92;
-    // circuits / simulation want to see inside the brain
-    const xr = (mode !== 'anatomy') && !this.forceSolid;
-    this.setXray(xr, true);
+    // Circuits and simulation need to see inside the brain. They used to do
+    // that with the separate x-ray path, which has its own alpha formula and
+    // so looked nothing like a selection and ignored the appearance sliders.
+    // They now use the same dissolve focus mode uses; x-ray goes back to
+    // being purely the user's checkbox.
+    this._modeGhost = !anat;
+    this._applyGhostState();
+    this._styleStructures();
     this.bloom.strength = anat ? 0.20 : 0.46;
+  }
+
+  /**
+   * Single place that decides how see-through the cortex is.
+   *
+   * Three things can ask for it: a selection, circuits/simulation mode, and
+   * an isolated network. They used to set the uniforms independently, so
+   * whichever ran last won and switching modes with something selected
+   * produced states neither of them intended.
+   */
+  _applyGhostState() {
+    const sel = this._selState || { any: false };
+    const dim = sel.any || this._modeGhost || this._netActive;
+    // A network overlay paints the surface; there is nothing inside it to
+    // reveal, so it dims without dissolving.
+    const fade = sel.any || this._modeGhost;
+
+    this.cortexUniforms.uDim.value = dim ? 1.0 : 0.0;
+    this.cortexUniforms.uGhostFade.value = fade ? 1.0 : 0.0;
+
+    const xray = !!this._xrayOn;
+    for (const m of [this.cortexL, this.cortexR]) {
+      if (m) m.material.depthWrite = !xray && !fade;
+    }
+    this._syncSelLayer();
   }
 
   setXray(on, soft = false) {
     this._xrayTarget = on ? 1 : 0;
+    this._xrayOn = !!on;
     if (!soft) this.cortexUniforms.uXray.value = this._xrayTarget;
-    // Critical: an opaque cortex must write depth so it hides the structures
-    // inside it; a glass cortex must NOT, or it would occlude them.
     for (const m of [this.cortexL, this.cortexR]) {
-      if (m) { m.material.depthWrite = !on; m.material.needsUpdate = true; }
+      if (m) m.material.needsUpdate = true;
     }
-    for (const [id, m] of this.structures) {
-      const meta = this.structMeta.get(id);
-      m.material.opacity = on
-        ? Math.min(1, (meta.opacity ?? 1) * 1.0)
-        : (meta.opacity ?? 1);
-      m.material.emissiveIntensity = on ? 0.34 : 0.16;
-    }
+    // Depth writing is decided in one place, because a dissolved shell needs
+    // it off for the same reason x-ray does.
+    this._applyGhostState();
+    // Structure opacity is owned by _styleStructures, which knows about the
+    // selection and the appearance sliders; this only changes the baseline.
+    this._styleStructures();
   }
 
   setHemisphere(h) {
@@ -786,8 +823,7 @@ export class Viewer {
     if (m) m.visible = this._structVisible(id);
   }
 
-  setPins(on) { this.showPins = on; }
-  setAutoRotate(on) { this.controls.autoRotate = on; }
+  setPins(on) { this.showPins = on; }  setAutoRotate(on) { this.controls.autoRotate = on; }
 
   /**
    * Colour the cortex by resting-state functional network instead of by
@@ -807,15 +843,8 @@ export class Viewer {
     const active = (id === null || id === undefined) ? -1 : id;
     this.activeNetwork = active < 0 ? null : active;
     this.cortexUniforms.uNetActive.value = active;
-    // Reuse the same ghosting path as region focus: everything that is not
-    // in the chosen network collapses to its outline.
-    this.cortexUniforms.uDim.value = active >= 0 ? 1.0 : 0.0;
-    this.cortexUniforms.uGhostFade.value = 0.0;
-    this._syncSelLayer();
-    const xray = this.cortexUniforms.uXray.value > 0.5;
-    for (const m of [this.cortexL, this.cortexR]) {
-      if (m) m.material.depthWrite = !xray;
-    }
+    this._netActive = active >= 0;
+    this._applyGhostState();
   }
 
   /** Highlight a cortical label index or a structure id. */
@@ -850,20 +879,6 @@ export class Viewer {
       if (i >= 0 && i < 32) this.selData[i * 4] = 255;
     }
     this.selTex.needsUpdate = true;
-    this.cortexUniforms.uDim.value = any ? 1.0 : 0.0;
-    // Any selection dissolves the shell, so a picked cortical parcel reads
-    // the same way a picked structure does: one solid thing inside glass.
-    this.cortexUniforms.uGhostFade.value = any ? 1.0 : 0.0;
-    this._syncSelLayer();
-
-    // Ghosted fragments keep a flat base alpha and so never reach the
-    // discard, which means a dissolved shell would otherwise write depth and
-    // occlude whatever it is meant to be revealing.
-    const xray = this.cortexUniforms.uXray.value > 0.5;
-    const dissolved = any;
-    for (const m of [this.cortexL, this.cortexR]) {
-      if (m) m.material.depthWrite = !xray && !dissolved;
-    }
 
     // Once the shell dissolves, every faded structure inside shows through it
     // at once. That is useful context when the selection IS a structure, and
@@ -875,19 +890,46 @@ export class Viewer {
         ? [...this.structures.keys()].filter(id => !SILHOUETTE.has(id))
         : []);
 
+    // Kept so the appearance sliders can restyle without a re-selection.
+    this._selState = { structs, any, cortexOnly };
+    this._applyGhostState();
+    this._styleStructures();
+  }
+
+  _styleStructures() {
+    const { structs, any, cortexOnly } = this._selState
+      || { structs: new Set(), any: false, cortexOnly: false };
+    const xray = this.cortexUniforms.uXray.value > 0.5;
+    const ga = this.cortexUniforms.uGhostAlpha.value;
+    // Structures are MeshPhysicalMaterial, so their "highlight" is emissive
+    // intensity rather than the shader's uHighlight. Scale it here or the
+    // slider silently does nothing to anything in the STRUCTURES list.
+    const hl = this.cortexUniforms.uHighlight.value;
+
     for (const [id, m] of this.structures) {
       const on = structs.has(id);
       const meta = this.structMeta.get(id);
-      m.material.emissiveIntensity = on ? 1.15 : (xray ? 0.34 : 0.16);
+      m.material.emissiveIntensity = on
+        ? 1.15 * hl : (xray ? 0.34 : 0.16) * ga;
       // Unselected structures fade almost out too, so the selection is the
       // only solid thing on screen. Kept low because ~15 translucent shells
       // with depthWrite off stack additively and read far stronger than a
       // single one at the same alpha. The silhouette pair is allowed more,
       // so the specimen still reads as one body.
-      const fade = (cortexOnly && SILHOUETTE.has(id)) ? 0.16 : 0.03;
-      m.material.opacity = any && !on
-        ? (meta.opacity ?? 1) * fade : (meta.opacity ?? 1);
-      m.material.depthWrite = !(any && !on);
+      //
+      // Circuits and simulation dim them far less: nothing is selected there,
+      // and these are the structures the pathways actually run between, so
+      // they are the subject rather than clutter. Without this the cortex
+      // went to glass while they stayed solid, and the brain as a whole did
+      // not read as transparent at all.
+      const modeOnly = !any && this._modeGhost;
+      const fade = modeOnly
+        ? 0.45 * ga
+        : ((cortexOnly && SILHOUETTE.has(id)) ? 0.16 : 0.03) * ga;
+      const dim = modeOnly || (any && !on);
+      m.material.opacity = dim
+        ? Math.min(1, (meta.opacity ?? 1) * fade) : (meta.opacity ?? 1);
+      m.material.depthWrite = !dim;
       m.userData.pulse = on;
       m.visible = this._structVisible(id);
 
@@ -905,6 +947,18 @@ export class Viewer {
       // muted ones need no handling here.
       pin.el.classList.toggle('faded', any && !structs.has(id));
     }
+  }
+
+  /** How visible everything that is NOT selected stays. 1.0 = default look. */
+  setGhostAlpha(v) {
+    this.cortexUniforms.uGhostAlpha.value = v;
+    this._styleStructures();
+  }
+
+  /** How strongly the selected region reads. 1.0 = default look. */
+  setHighlight(v) {
+    this.cortexUniforms.uHighlight.value = v;
+    this._styleStructures();
   }
 
   /** Per-region activation glow, 0..1, driven by the simulation. */
@@ -982,12 +1036,20 @@ export class Viewer {
 
 
     // structure pulse + glow
+    const hl = this.cortexUniforms.uHighlight.value;
+    const ga = this.cortexUniforms.uGhostAlpha.value;
+    const focusing = this.cortexUniforms.uDim.value > 0.5;
     for (const m of this.structures.values()) {
       const g = m.userData.glow || 0;
-      const pulse = m.userData.pulse
-        ? 0.55 + 0.45 * Math.sin(t * 3.4) : 0;
+      const on = m.userData.pulse;
+      const pulse = on ? 0.55 + 0.45 * Math.sin(t * 3.4) : 0;
       const base = this.cortexUniforms.uXray.value > 0.5 ? 0.34 : 0.16;
-      const want = base + g * 1.5 + pulse * 0.7;
+      // The appearance sliders must be applied here, not only where the
+      // selection is styled: this loop rewrites emissiveIntensity every
+      // frame and would otherwise pull it straight back to the default.
+      const want = on
+        ? (base + g * 1.5 + pulse * 0.7) * hl
+        : (base + g * 1.5) * (focusing ? ga : 1.0);
       m.material.emissiveIntensity +=
         (want - m.material.emissiveIntensity) * Math.min(1, dt * 8);
       if (g > 0.01) {

@@ -164,6 +164,16 @@ class Handler(SimpleHTTPRequestHandler):
             traceback.print_exc()
             self._send_json({"error": str(exc)}, 500)
 
+    def guess_type(self, path):
+        # The base handler returns "text/javascript" with no charset, so the
+        # browser decodes UTF-8 as latin-1 and renders "…" as "â€¦".
+        ctype = super().guess_type(path)
+        if "charset=" not in ctype and (
+                ctype.startswith("text/")
+                or ctype in ("application/javascript", "application/json")):
+            ctype += "; charset=utf-8"
+        return ctype
+
     def end_headers(self) -> None:
         # allows the page to use SharedArrayBuffer-free WebGL2 features and
         # stops aggressive caching of the dev assets

@@ -256,16 +256,29 @@ nodes actually engaged by a logged behaviour. The comment reads:
 
 **Do not reintroduce calendar-driven change.** Repetition is the mechanism.
 
-### Sensitivity (12 weeks, `simulate_scripted`)
-| Adherence | Gap closed |
-|---|---|
-| 90 % | 74.8 % |
-| 70 % | 75.7 % |
-| 40 % | 40.5 % |
-| 10 % | 8.7 % |
+### Sensitivity (12 weeks, `simulate_scripted`, 24 runs per level)
+| Adherence | Gap closed (mean) | Range |
+|---|---|---|
+| 90 % | 69.6 % | 65.7 – 72.9 % |
+| 70 % | 59.9 % | 51.9 – 73.1 % |
+| 40 % | 28.0 % | 16.5 – 42.3 % |
+| 10 % | −17.1 % | −37.3 – 4.4 % |
 
-Effects are deliberately gradual. Avoid changes that let one action visibly
-transform the brain.
+One practice moves the model ~1.7 % (sd 0.5). Effects are deliberately
+gradual; avoid changes that let one action visibly transform the brain.
+
+**`Connectome.equilibrate()` runs once at `Simulation.__init__`.** The
+hand-set starting weights in `atlas.py` do not satisfy the input budget, so
+without it the first practice to touch a node also paid off that imbalance in
+one step - one repetition moved the model ~3.5 % *regardless of `base_lr`*,
+which made the learning rate look broken when it was not.
+
+**`Params.session_variance` (0.30) makes each repetition land differently**,
+lognormal with mean 1.0 so it widens the distribution without shifting it.
+`Simulation(seed=...)` controls it; **paired comparison tests must share a
+seed** or they compare two sequences of luck rather than the thing under
+test (`test_spacing_beats_massing`, `test_sleep_matters`,
+`test_disuse_decays_but_consolidation_protects`).
 
 ---
 
@@ -528,15 +541,17 @@ readout, save/load, 27/27 tests passing, 0 console errors.
 **Superseded:** `neuroforge/ui/` is the original Tkinter dashboard. It still
 runs but is no longer the product. Treat as legacy.
 
+**Logging is a docked surface, not a modal.** `#logdock` (`LogDock` in
+`ui.js`) is the right-hand surface the whole log flow renders into - compose,
+and then the result in place. The brain stays visible, so the cascade fired
+by `animateResponse()` is watchable while the deltas are read. Hovering a
+response calls `previewEvent()`, which lights the structures and regions its
+rule touches and dims every other pathway via `circuits.focus()` - you see
+what a choice engages before committing. `Panel` and `LogDock` close each
+other; only one right-hand surface is open at a time.
+
 **Open ideas:** per-region info sourced from a citable dataset; export of a
 session summary.
-
-**Known gap, user-visible:** the log modal still covers the brain, so the
-user cannot watch the model respond while they write. Free-text entry now
-lives inside that modal, which makes the layout problem more acute rather
-than less. Turning logging into a persistent side surface is the largest
-remaining UX item. The UI palette and typography have been addressed; the
-*layout* has not.
 
 **Deliberately not done:** cranial nerves, meningeal layers, pituitary,
 hippocampal subfields. The BrainFacts reference model is hand-sculpted by

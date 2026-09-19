@@ -10,6 +10,7 @@ the WebGL renderer, which is what keeps the two independent.
   GET  /api/sim/state       current simulation state (weights, metrics)
   POST /api/sim/log         record a behaviour
   POST /api/sim/interpret   free text -> suggested events (does NOT apply)
+  POST /api/sim/analyse     free text + events -> what the rules engage
   POST /api/sim/advance     advance N days
   POST /api/sim/replay      state at a past day
   POST /api/sim/reset       start over
@@ -28,6 +29,7 @@ from typing import Any, Dict, List
 
 from ..anatomy.anchors import (ANCHORS, NODE_TO_CORTEX, NODE_TO_STRUCTURE,
                                anchor_table)
+from ..analyse import analyse
 from ..atlas import EDGES, EXCLUSIONS, PATHWAYS, REGIONS
 from ..engine import Simulation
 from ..events import CATEGORIES, EVENT_TYPES
@@ -225,6 +227,21 @@ def _interpret(payload: Dict[str, Any]) -> Dict[str, Any]:
     allow = bool(payload.get("allow_llm", True))
     result = interpret(text, allow_llm=allow)
     return {"interpretation": result.to_dict(), "llm": llm_config()}
+
+
+@API.post("/api/sim/analyse")
+def _analyse(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Explain what the rules say an entry engages, and what to light up.
+
+    Deliberately NOT @guarded. It never touches SIM, and it is the slowest
+    endpoint in the app; holding STATE_LOCK across a model call would put
+    every other request behind it - the same rule /api/sim/interpret and
+    /api/chat follow.
+    """
+    text = str(payload.get("text", ""))
+    events = [str(e) for e in (payload.get("events") or [])][:4]
+    allow = bool(payload.get("allow_llm", True))
+    return {"analysis": analyse(text, events, allow_llm=allow)}
 
 
 @API.post("/api/sim/advance")

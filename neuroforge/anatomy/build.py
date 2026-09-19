@@ -18,7 +18,8 @@ import struct
 import time
 from typing import Any, Dict, List, Tuple
 
-from . import cortex_real, fetch, subcortex_real
+from . import cortex_real, fetch, subcortex_real, tracts
+from .anchors import ANCHORS, NODE_TO_CORTEX, NODE_TO_STRUCTURE
 from .mesh import (CORTICAL_LABELS, Mesh, build_cortex, merge, mirror_x)
 from .structures import (CORTICAL_REGIONS, GEOMETRY_NOTE, GROUPS,
                          NETWORK_CAVEAT,
@@ -38,7 +39,9 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(
 # v10: measured per-hemisphere centroids published for cortical regions, so
 #      the sidebar can aim the camera at a surface parcel the way it already
 #      does at a subcortical structure.
-SCENE_VERSION = 10
+# v11: pathway endpoints taken from measured geometry instead of a hand-typed
+#      table, and the curves between them routed through white matter.
+SCENE_VERSION = 11
 
 
 # --------------------------------------------------------------------------
@@ -253,6 +256,8 @@ def build_scene(subdivisions: int = 6, verbose: bool = True) -> Dict[str, Any]:
               if all(x in have_regions for x in g["regions"])
               and all(x in have_structs for x in g["structures"])]
 
+    anchors, paths = _pathways(structures, cortical, verbose)
+
     scene = {
         "version": SCENE_VERSION,
         "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -277,6 +282,11 @@ def build_scene(subdivisions: int = 6, verbose: bool = True) -> Dict[str, Any]:
             for i in sorted(cortex_real.YEO7_NAMES)
         ] if left.network else [],
         "network_caveat": NETWORK_CAVEAT,
+        # Pathway endpoints measured from the built geometry, and the routes
+        # between them. Both are empty on the procedural fallback, where the
+        # renderer keeps using its own synthetic arcs.
+        "anchors_measured": anchors,
+        "edge_paths": paths,
         "notes": {
             "geometry": (fetch.NOTICE if geometry_source == "fsaverage"
                          else GEOMETRY_NOTE),
@@ -286,6 +296,60 @@ def build_scene(subdivisions: int = 6, verbose: bool = True) -> Dict[str, Any]:
     if verbose:
         print(f"[anatomy] done in {time.time()-t0:.1f}s", flush=True)
     return scene
+
+
+def _pathways(structures: List[Dict[str, Any]],
+              cortical: List[Dict[str, Any]],
+              verbose: bool) -> Tuple[Dict[str, List[float]],
+                                      Dict[str, List[List[float]]]]:
+    """
+    Where each simulation node sits, and how to get between them.
+
+    anchors.py is the seam between the model and the geometry, and it already
+    names every simulation node, so resolving those names against measured
+    centroids belongs on this side of it. The simulation still knows nothing
+    about millimetres.
+
+    The hand-typed table in anchors.py stays as the fallback: it is the only
+    thing available when the anatomy has not been downloaded, and a few nodes
+    (LC, VTA) have no aseg label to measure.
+    """
+    # Lazy: the simulation's edge list is only needed to know which pairs to
+    # route, and importing it at module scope would make the anatomy package
+    # import the model on every build.
+    from ..atlas import EDGES
+
+    by_struct = {s["id"]: s for s in structures}
+    by_cortex = {c["id"]: c for c in cortical}
+
+    anchors: Dict[str, List[float]] = {}
+    for node, fallback in ANCHORS.items():
+        found = None
+        sid = NODE_TO_STRUCTURE.get(node)
+        if sid and by_struct.get(sid, {}).get("centroids"):
+            found = by_struct[sid]["centroids"][0]
+        if found is None:
+            cid = NODE_TO_CORTEX.get(node)
+            if cid and by_cortex.get(cid, {}).get("centroids"):
+                found = by_cortex[cid]["centroids"][0]
+        anchors[node] = [round(v, 2) for v in (found or list(fallback))]
+
+    paths: Dict[str, List[List[float]]] = {}
+    if not tracts.available():
+        return anchors, paths
+
+    t0 = time.time()
+    for e in EDGES:
+        a, b = anchors.get(e.src), anchors.get(e.dst)
+        if not a or not b:
+            continue
+        p = tracts.route(tuple(a), tuple(b))
+        if p:
+            paths[f"{e.src}->{e.dst}"] = [[round(c, 2) for c in q] for q in p]
+    if verbose:
+        print(f"[anatomy]   routed {len(paths)}/{len(EDGES)} pathways "
+              f"through white matter ({time.time()-t0:.1f}s)", flush=True)
+    return anchors, paths
 
 
 # --------------------------------------------------------------------------

@@ -42,7 +42,7 @@ from .atlas import EDGES, PATHWAYS, EdgeSpec, target_weight
 
 @dataclass
 class Params:
-    base_lr: float = 0.055          # learning rate per practice repetition
+    base_lr: float = 0.030          # learning rate per practice repetition
     unlearn_ratio: float = 0.85     # weakening is slightly slower than growth
     daily_decay: float = 0.012      # "use it or lose it" per day
     baseline_pull: float = 0.006    # drift back toward temperament per day
@@ -55,6 +55,12 @@ class Params:
     w_max: float = 0.99
     spacing_halflife: float = 1.6   # nth rep today is worth ~1/(1+r/halflife)
     stress_drift: float = 0.010     # chronic stress pushes threat circuits up
+    # Spread of the per-practice gain. Two people doing the same thing, or
+    # the same person on two days, do not get the same result: attention,
+    # motivation and context all vary and none of them are logged here.
+    # Lognormal with mean 1.0, so this adds uncertainty without quietly
+    # inflating or deflating the average outcome.
+    session_variance: float = 0.30
 
 
 PARAMS = Params()
@@ -124,7 +130,10 @@ class Connectome:
         return cm
 
     def snapshot(self) -> Dict[str, float]:
-        return {f"{c.spec.src}->{c.spec.dst}": round(c.w, 5)
+        # 8dp, not 5: equilibrate() leaves the starting weights on arbitrary
+        # floats rather than the 2dp literals in atlas.py, and at 5dp a
+        # save/load round trip no longer reproduced alignment to 6 places.
+        return {f"{c.spec.src}->{c.spec.dst}": round(c.w, 8)
                 for c in self.conns}
 
     def load(self, snap: Dict[str, float]) -> None:
@@ -175,6 +184,18 @@ class Connectome:
 
         if touched:
             self._homeostasis(touched)
+
+    def equilibrate(self, rounds: int = 16) -> None:
+        """Settle the starting weights into homeostatic balance.
+
+        The hand-set starting weights in atlas.py do not happen to satisfy
+        the input budget, so without this the first practice to touch a node
+        also paid off that imbalance in one step - one repetition moved the
+        model several percent no matter how small the learning rate was. A
+        brain is already balanced before anyone starts practising.
+        """
+        for _ in range(rounds):
+            self._homeostasis()
 
     def _homeostasis(self, nodes: Iterable[str] | None = None) -> None:
         """Competition for a limited 'input budget' at each target node.

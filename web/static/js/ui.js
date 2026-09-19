@@ -27,6 +27,7 @@ export function toast(msg, sub = '', ms = 3400) {
 /* ------------------------------------------------------------------ panel */
 export const Panel = {
   open(html) {
+    LogDock.close();
     $('#panelBody').innerHTML = html;
     $('#panel').classList.remove('hidden');
     document.body.classList.add('panel-open');
@@ -36,6 +37,28 @@ export const Panel = {
     document.body.classList.remove('panel-open');
   },
   isOpen() { return !$('#panel').classList.contains('hidden'); },
+};
+
+/* --------------------------------------------------------------- logdock */
+/* Logging is docked, not modal. A dialog over the brain meant the one thing
+ * worth watching - the model responding - happened behind the dialog. */
+export const LogDock = {
+  open(html) {
+    Panel.close();
+    this.set(html);
+    $('#logdock').classList.remove('hidden');
+    document.body.classList.add('log-open');
+  },
+  set(html) {
+    const body = $('#logBody');
+    body.innerHTML = html;
+    body.parentElement.scrollTop = 0;
+  },
+  close() {
+    $('#logdock').classList.add('hidden');
+    document.body.classList.remove('log-open');
+  },
+  isOpen() { return !$('#logdock').classList.contains('hidden'); },
 };
 
 function section(title, tag, body, cls = '') {
@@ -243,31 +266,36 @@ export const Modal = {
   isOpen() { return !$('#modalWrap').classList.contains('hidden'); },
 };
 
-/** Step 1 of logging: the trigger. */
+/** Step 1 of logging: the trigger. Rendered into the docked surface. */
 export function triggerModalHtml() {
   return `
-    <div class="m-title">Something happened.</div>
+    <div class="p-kicker">SOMETHING HAPPENED</div>
+    <div class="m-title">What did you actually do?</div>
     <div class="m-sub">
-      A trigger arrives. In the model this raises emotional salience and
-      opens two competing routes â€” the old automatic one and the deliberate   
-      regulated one. What did you actually do?
+      A trigger raises emotional salience and opens two competing routes &mdash;
+      the old automatic one and the deliberate regulated one.
     </div>
+    <div class="preview-hint">Hover a response to see what it engages.</div>
 
     <div class="nl-box">
       <label class="nl-label" for="nlText">
         Describe it in your own words
         <span class="nl-hint">optional &mdash; you can just pick below</span>
       </label>
-      <textarea id="nlText" rows="3" placeholder="e.g. My colleague took credit for my work. My chest went tight but I paused and didn't get angry."></textarea>
+      <textarea id="nlText" rows="3" placeholder="e.g. I kept replaying an argument in my head all evening, then went for a walk and felt steadier."></textarea>
       <div class="nl-row">
-        <button id="nlGo" class="primary">Interpret</button>
+        <button id="nlGo">Interpret</button>
+        <span class="nl-kbd">Ctrl + Enter</span>
         <span id="nlSource" class="nl-source"></span>
       </div>
-      <div id="nlOut" class="nl-out hidden"></div>
     </div>
 
-    <div class="nl-divider"><span>or choose directly</span></div>
-    <div id="choiceHost"></div>`;
+    <div id="nlOut" class="nl-out hidden"></div>
+
+    <details id="pickWrap" class="nl-pick" open>
+      <summary><span>or choose directly</span></summary>
+      <div id="choiceHost"></div>
+    </details>`;
 }
 
 /**
@@ -304,6 +332,64 @@ export function proposalsHtml(interp) {
       These are guesses about <b>which of the 16 known events</b> you
       described. The effect on the model is decided by fixed rules, not by
       the interpreter.
+    </div>`;
+}
+
+/** One boxed placeholder while the classifier runs. */
+export function interpretingHtml(stage = 'Reading your entry') {
+  return `
+    <div class="an-wrap pending">
+      <div class="an-h">INTERPRETING</div>
+      <div class="an-load"><i></i><i></i><i></i></div>
+      <div class="an-stage">${stage}</div>
+    </div>`;
+}
+
+/**
+ * The brain reading. Pathway rows come from the rules; the prose may come
+ * from a model, which is why the two are labelled separately.
+ */
+export function analysisHtml(a) {
+  if (!a || !a.events || !a.events.length) return '';
+  const rows = (a.pathways || []).map(p => {
+    const up = p.amount > 0;
+    const pct = Math.min(100, Math.abs(p.amount) * 100);
+    // Colour is "toward or away from your target", not the raw sign: a
+    // stress habit gaining +0.70 is not good news.
+    return `
+      <div class="an-row ${p.beneficial ? 'good' : 'bad'}"
+           title="${p.science.replace(/"/g, '&quot;')}">
+        <span class="an-name">${p.label}</span>
+        <span class="an-bar"><i style="width:${pct}%"></i></span>
+        <span class="an-amt">${up ? '+' : '&minus;'}${Math.abs(p.amount).toFixed(2)}</span>
+      </div>`;
+  }).join('');
+
+  // State events move sleep and stress instead of any one connection, so
+  // they get a row of their own rather than an empty panel.
+  const mods = (a.modulators || []).map(m => `
+      <div class="an-mod">
+        <span class="an-name">${m.label}</span>
+        <span class="an-amt">${m.absolute ? '' : (m.amount > 0 ? '+' : '&minus;')}${Math.abs(m.amount).toFixed(2)}</span>
+      </div>`).join('');
+  const modWrap = mods
+    ? `<div class="an-mods"><div class="an-sub">CONDITIONS FOR LEARNING</div>${mods}</div>`
+    : '';
+
+  const src = a.source === 'model'
+    ? `<span class="tag model">MODEL</span> written by ${a.model}`
+    : `<span class="tag real">RULES</span> composed from the rule table`;
+
+  return `
+    <div class="an-wrap">
+      <div class="an-h">WHAT THIS ENGAGES</div>
+      <div class="an-text">${a.text}</div>
+      ${rows ? `<div class="an-rows">${rows}</div>` : ''}
+      ${rows ? `<div class="an-legend">
+        <span class="up"><i></i>toward your target</span>
+        <span class="dn"><i></i>away from it</span>
+      </div>` : ''}      ${modWrap}
+      <div class="an-src">${src}${a.note ? ' &middot; ' + a.note : ''}</div>
     </div>`;
 }
 
@@ -396,13 +482,6 @@ export function honestyHtml(model, notes) {
   return `
     <div class="m-title">What this is, and what it is not</div>
     <div class="m-sub">Scientific integrity statement</div>
-
-    ${section('THE SHORT VERSION', 'model', `
-      NeuroForge is an <b>educational simulation and visual metaphor</b>.
-      It does not measure your neurons, synapses, gray matter, connectivity
-      or brain activity. It is not a diagnostic or clinical instrument. Every
-      number it shows is a variable inside this program, updated by rules you
-      can read in full.`, 'model')}
 
     ${section('WHAT NEUROPLASTICITY ACTUALLY MEANS', 'real', `
       Learning changes the nervous system, but the dominant mechanism is not

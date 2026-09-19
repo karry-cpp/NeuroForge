@@ -73,6 +73,10 @@ VOL_FILES: Dict[str, str] = {
     # res-02 is 2 mm, ~1.1 M voxels, 86 KB. res-01 would be eight times the
     # work for detail finer than the segmentation itself is reliable at.
     "aseg": "tpl-MNI152NLin2009cAsym_res-02_seg-aseg_dseg.nii.gz",
+    # Tissue probability for white matter. Used to route the pathway curves
+    # through white matter instead of straight through ventricles and cortex.
+    # Not diffusion data and not tractography - see tracts.py.
+    "wm": "tpl-MNI152NLin2009cAsym_res-02_label-WM_probseg.nii.gz",
 }
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.dirname(

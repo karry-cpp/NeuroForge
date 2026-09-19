@@ -31,7 +31,7 @@ class TestPlasticity(unittest.TestCase):
         self.assertLess(s.current.pathway_strength("rumination"), before)
 
     def test_disuse_decays_but_consolidation_protects(self):
-        fresh, trained = Simulation(), Simulation()
+        fresh, trained = Simulation(seed=1), Simulation(seed=1)
         for _ in range(40):
             trained.log_event("reappraisal")
             trained.log_event("sleep_good")
@@ -43,7 +43,9 @@ class TestPlasticity(unittest.TestCase):
                            fresh.current.pathway_strength("regulation"))
 
     def test_spacing_beats_massing(self):
-        massed, spaced = Simulation(), Simulation()
+        # Same seed on both: practice gain now varies, and comparing two
+        # different sequences of luck would not test spacing at all.
+        massed, spaced = Simulation(seed=1), Simulation(seed=1)
         for _ in range(20):
             massed.log_event("name_emotion")
         massed.advance_day(20)
@@ -54,7 +56,7 @@ class TestPlasticity(unittest.TestCase):
                            massed.current.pathway_strength("regulation"))
 
     def test_sleep_matters(self):
-        good, bad = Simulation(), Simulation()
+        good, bad = Simulation(seed=1), Simulation(seed=1)
         for sim, ev in ((good, "sleep_good"), (bad, "sleep_poor")):
             for _ in range(30):
                 sim.log_event(ev)

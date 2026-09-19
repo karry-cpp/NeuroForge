@@ -77,14 +77,23 @@ weaken its rivals. Critically, that competition is driven by **use, not by the
 calendar**. An unwanted pathway does not fade simply because time passed.
 Repetition is the whole mechanism.
 
-Effects are deliberately small. Twelve simulated weeks:
+Effects are deliberately small. One logged practice moves the model by about
+**1.7%** of the remaining gap, and no two repetitions land the same way.
 
-| Adherence | Gap closed |
-|---|---|
-| 90 % | 74.8 % |
-| 70 % | 75.7 % |
-| 40 % | 40.5 % |
-| 10 % | 8.7 % |
+Twelve simulated weeks, 24 runs at each level:
+
+| Adherence | Gap closed (mean) | Range across runs |
+|---|---|---|
+| 90 % | 69.6 % | 65.7 – 72.9 % |
+| 70 % | 59.9 % | 51.9 – 73.1 % |
+| 40 % | 28.0 % | 16.5 – 42.3 % |
+| 10 % | **−17.1 %** | −37.3 – 4.4 % |
+
+Two things that table is meant to show. Sporadic practice is not slow
+progress, it is **backwards** — at 10 % adherence the slips outweigh the
+reps. And identical adherence does not produce an identical result: attention,
+motivation and context all vary, none of them are logged, and the spread at
+70 % is wider than the gap between 70 % and 90 %.
 
 ### The target is not a "good brain"
 

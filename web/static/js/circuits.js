@@ -97,10 +97,17 @@ export class Circuits {
   }
 
   /* --------------------------------------------------------------- build */
-  build(model) {
+  build(model, scene = {}) {
     this.model = model;
+    // Routes measured through white matter, when the anatomy is present.
+    this.paths = scene.edge_paths || {};
+    const measured = scene.anchors_measured || {};
     const anchors = {};
-    for (const a of model.anchors) anchors[a.id] = a;
+    // Endpoints from the built geometry beat the hand-typed table: a curve
+    // then starts on the structure the panel highlights, not near it.
+    for (const a of model.anchors) {
+      anchors[a.id] = measured[a.id] ? { ...a, right: measured[a.id] } : a;
+    }
     for (const p of model.pathways) this.pathwayColors[p.id] = p.color;
 
     for (const e of model.edges) {
@@ -111,7 +118,7 @@ export class Circuits {
       const ghosts = [];
 
       for (const side of [1, -1]) {
-        const curve = this._curve(A, B, e.curve, side);
+        const curve = this._curve(A, B, e.curve, side, e.id);
         const geo = new THREE.TubeGeometry(curve, 58, 1.0, 9, false);
 
         const mat = new THREE.ShaderMaterial({
@@ -156,9 +163,19 @@ export class Circuits {
   }
 
   /** Build a curve that arcs *through* the brain rather than across it. */
-  _curve(A, B, bow, side) {
+  _curve(A, B, bow, side, id) {
     // Circuits live under viewer.root, which already applies the
     // RAS -> three.js rotation, so we work in raw millimetres here.
+
+    // A route measured through white matter, if one was published. The
+    // right hemisphere is what gets routed; the left is its mirror.
+    const pts = this.paths?.[id];
+    if (pts && pts.length > 2) {
+      return new THREE.CatmullRomCurve3(
+        pts.map(p => new THREE.Vector3(p[0] * side, p[1], p[2])),
+        false, 'centripetal', 0.5);
+    }
+
     const mirror = (a) => new THREE.Vector3(
       a.midline ? a.right[0] * (side > 0 ? 0.6 : -0.6) : a.right[0] * side,
       a.right[1],
@@ -282,12 +299,18 @@ export class Circuits {
     }
   }
 
-  /** Dim everything except the given pathway ids (or clear with null). */
-  focus(pathwayIds) {
+  /**
+   * Dim everything except the given pathway ids (or clear with null).
+   *
+   * `on` may exceed 1 to push the engaged edges above their normal alpha:
+   * contrast built only by dimming makes the whole scene darker, which reads
+   * as "the brain went dim" rather than "these lit up".
+   */
+  focus(pathwayIds, on = 1.0, off = 0.16) {
     for (const e of this.model.edges) {
-      const on = !pathwayIds || pathwayIds.includes(e.pathway);
+      const lit = !pathwayIds || pathwayIds.includes(e.pathway);
       for (const { mat } of this.edges.get(e.id) || []) {
-        mat.uniforms.uFocus.value = on ? 1.0 : 0.16;
+        mat.uniforms.uFocus.value = lit ? on : off;
       }
     }
   }

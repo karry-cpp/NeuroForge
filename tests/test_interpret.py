@@ -1,10 +1,36 @@
 """Tests for the free-text interpreter."""
 
+import os
 import unittest
 
+from neuroforge import discover
 from neuroforge.events import EVENTS_BY_ID
 from neuroforge.interpret import (Interpretation, _validate, classify_keywords,
                                   interpret)
+
+_SAVED = None
+
+
+def setUpModule():
+    """Keep the suite hermetic.
+
+    Auto-discovery means `interpret()` will happily call whatever model
+    server the developer has open. That made these tests hit the network,
+    take as long as the loaded model takes to generate, and assert against
+    its output - the suite hung for minutes once a 9B was loaded where a
+    0.5B had been. Nothing here is testing the model, so turn it off.
+    """
+    global _SAVED
+    _SAVED = os.environ.get("NEUROFORGE_LLM")
+    os.environ["NEUROFORGE_LLM"] = "off"
+    discover.find(force=True)
+
+
+def tearDownModule():
+    if _SAVED is None:
+        os.environ.pop("NEUROFORGE_LLM", None)
+    else:
+        os.environ["NEUROFORGE_LLM"] = _SAVED
 
 
 class TestKeywordClassifier(unittest.TestCase):
@@ -91,6 +117,9 @@ class TestInterpretEntryPoint(unittest.TestCase):
         self.assertEqual(interpret("").proposals, [])
 
     def test_offline_path_is_used_when_no_llm_configured(self):
+        # setUpModule forces NEUROFORGE_LLM=off. Without that this asserts a
+        # property of the developer's desktop, not of the code.
+        self.assertEqual(os.environ.get("NEUROFORGE_LLM"), "off")
         r = interpret("I stayed calm", allow_llm=True)
         self.assertEqual(r.source, "keyword")
 

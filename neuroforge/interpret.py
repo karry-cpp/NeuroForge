@@ -44,6 +44,7 @@ from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
 
 from .events import EVENT_TYPES, EVENTS_BY_ID
+from . import discover
 
 # --------------------------------------------------------------------------
 # Result type
@@ -264,6 +265,10 @@ def _post_json(url: str, payload: Dict[str, Any],
 
 def _extract_json(text: str) -> Dict[str, Any]:
     """Models like to wrap JSON in prose or fences. Dig it out."""
+    # Reasoning models (Qwen3, DeepSeek-R1 and friends) emit a long think
+    # block first. It is not JSON and it is not an answer.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    text = re.sub(r"^.*?</think>", "", text, flags=re.S)
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text)
@@ -273,11 +278,14 @@ def _extract_json(text: str) -> Dict[str, Any]:
         pass
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
+        # Some models answer with the bare array rather than an object.
+        m = re.search(r"\[.*\]", text, re.S)
+    if not m:
         raise ValueError("model did not return JSON")
     return json.loads(m.group(0))
 
 
-def _validate(raw: Dict[str, Any], source: str) -> Interpretation:
+def _validate(raw: Any, source: str) -> Interpretation:
     """
     Keep only what is real.
 
@@ -288,7 +296,13 @@ def _validate(raw: Dict[str, Any], source: str) -> Interpretation:
     """
     out: List[Proposal] = []
     dropped = 0
-    for p in (raw.get("proposals") or [])[:3]:
+    # Models disagree about the envelope: some return {"proposals": [...]},
+    # some return the bare list. Both are the same answer.
+    items = raw if isinstance(raw, list) else (raw.get("proposals") or [])
+    for p in items[:3]:
+        if not isinstance(p, dict):
+            dropped += 1
+            continue
         eid = str(p.get("event", "")).strip()
         ev = EVENTS_BY_ID.get(eid)
         if ev is None:
@@ -303,7 +317,11 @@ def _validate(raw: Dict[str, Any], source: str) -> Interpretation:
         out.append(Proposal(
             event=eid, label=ev.label, category=ev.category,
             intensity=round(max(0.25, min(1.5, inten)), 2),
-            confidence=round(max(0.0, min(1.0, conf)), 2),
+            # Capped. A model's self-reported confidence is not calibrated
+            # against anything: a 0.5B returned 1.0 on every answer here,
+            # including the ones that were plainly wrong. Showing 100% next
+            # to a guess invites the user to accept it without reading it.
+            confidence=round(max(0.0, min(0.85, conf)), 2),
             why=str(p.get("why", ""))[:240]))
     note = ("Suggested by a language model. It reads your words; it does not "
             "read your brain. Check it before applying.")
@@ -313,22 +331,51 @@ def _validate(raw: Dict[str, Any], source: str) -> Interpretation:
 
 
 def llm_config() -> Dict[str, Any]:
-    """Read provider settings from the environment. Never from the repo."""
+    """Read provider settings from the environment, or find a local server.
+
+    A base URL on its own is enough: a local OpenAI-compatible server
+    (LM Studio, Ollama, llama.cpp) has no provider name to give and no key
+    to check. This deliberately matches llm.py, which enables the chat panel
+    on the same rule - when the two disagreed, the setup the README
+    documents turned the chat on and left interpretation on keywords.
+
+    With nothing configured at all, discover.resolve() looks for a local
+    runner on its usual port, so starting LM Studio is the whole setup.
+    """
     provider = (os.environ.get("NEUROFORGE_LLM") or "").strip().lower()
+    key = os.environ.get("NEUROFORGE_LLM_KEY") or ""
+    found = discover.resolve()
+    base = found["base"]
     return {
-        "provider": provider,
-        "enabled": provider in ("openai", "gemini"),
-        "model": os.environ.get("NEUROFORGE_LLM_MODEL") or "",
-        "has_key": bool(os.environ.get("NEUROFORGE_LLM_KEY")),
-        "base": os.environ.get("NEUROFORGE_LLM_BASE") or "",
+        "provider": provider or ("openai" if base else ""),
+        "enabled": bool(base) or (provider in ("openai", "gemini")
+                                  and bool(key)),
+        "model": found["model"],
+        "has_key": bool(key),
+        "base": base,
+        "runner": found["runner"],
+        "auto": bool(found["auto"]),
     }
 
 
-def classify_llm(text: str, timeout: float = 20.0) -> Interpretation:
+def classify_llm(text: str, timeout: float = 0.0) -> Interpretation:
     cfg = llm_config()
     key = os.environ.get("NEUROFORGE_LLM_KEY", "")
-    if not cfg["enabled"] or not key:
+    if not cfg["enabled"]:
         raise RuntimeError("LLM not configured")
+    # Only a hosted provider needs a key; a local server is reached by URL.
+    if not cfg["base"] and not key:
+        raise RuntimeError("LLM not configured")
+
+    if not timeout:
+        # A local server may still be loading several GB of weights when the
+        # first request arrives, and a 9B model on CPU runs at roughly a
+        # dozen tokens a second. Measured: ~19s for a trivial reply, so a
+        # real classification needs minutes, not the 20s a hosted API needs.
+        base = cfg["base"]
+        local = any(h in base for h in
+                    ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
+        timeout = 300.0 if local else 20.0
 
     user = (f"Event types:\n{_catalogue()}\n\n"
             f"Journal entry:\n\"\"\"{text.strip()[:2000]}\"\"\"")
@@ -347,15 +394,74 @@ def classify_llm(text: str, timeout: float = 20.0) -> Interpretation:
     else:
         model = cfg["model"] or "gpt-4o-mini"
         base = cfg["base"] or "https://api.openai.com/v1"
-        data = _post_json(f"{base}/chat/completions", {
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        # Qwen3 reads this marker in the prompt itself, which is the only
+        # lever that works when the server ignores enable_thinking.
+        if "qwen" in model.lower():
+            user += "\n/no_think"
+        payload = {
             "model": model, "temperature": 0.1,
-            "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": _SYSTEM},
                          {"role": "user", "content": user}],
-        }, {"Authorization": f"Bearer {key}"}, timeout)
+            # This is a classification, not a puzzle. Reasoning models will
+            # otherwise spend their whole budget thinking: measured on
+            # Qwen3.5-9B, 796 of 800 tokens went to reasoning and the reply
+            # came back empty with finish_reason "length". Servers that do
+            # not understand these keys ignore them.
+            "chat_template_kwargs": {"enable_thinking": False},
+            "reasoning_effort": "low",
+            "max_tokens": 2400,
+        }
+        url = f"{base}/chat/completions"
+        try:
+            data = _post_json(
+                url, {**payload, "response_format": {"type": "json_object"}},
+                headers, timeout)
+        except urllib.error.HTTPError:
+            # Plenty of OpenAI-compatible servers reject response_format
+            # outright. _extract_json already copes with prose around the
+            # object, so asking without it is better than giving up.
+            data = _post_json(url, payload, headers, timeout)
         txt = data["choices"][0]["message"]["content"]
+        # A reasoning model that thinks past its limit returns an empty
+        # string, which is not a parse failure and should not be reported
+        # as one.
+        if not (txt or "").strip():
+            fin = (data["choices"][0].get("finish_reason") or "").strip()
+            raise RuntimeError(
+                f"model returned no content (finish_reason={fin or 'unknown'})"
+                " - it likely spent its whole budget reasoning")
 
     return _validate(_extract_json(txt), f"llm:{model}")
+
+
+def _cross_check(r: Interpretation, text: str) -> Interpretation:
+    """Compare the model against the keyword matcher and say when they differ.
+
+    A small model will answer confidently and wrongly - measured on a 0.5B,
+    "I skipped the meeting because I was dreading it" came back as *exposure*
+    at confidence 1.0, which is the opposite of what happened and would have
+    credited the user with a practice for avoiding. The keyword matcher is
+    crude but it does not invent: when the two disagree about whether this
+    was a Practice or a Slip, that is worth putting in front of the user
+    rather than resolving silently.
+    """
+    kw = classify_keywords(text)
+    if not kw.proposals:
+        return r
+    kw_cats = {p.category for p in kw.proposals}
+    top = r.proposals[0]
+    if top.category in kw_cats:
+        return r
+
+    known = {p.event for p in r.proposals}
+    for p in kw.proposals:
+        if p.event not in known:
+            r.proposals.append(p)
+    r.note += (f" The keyword matcher read this as "
+               f"{', '.join(sorted(kw_cats))} rather than {top.category}; "
+               f"both readings are listed so you can pick.")
+    return r
 
 
 def interpret(text: str, allow_llm: bool = True) -> Interpretation:
@@ -372,7 +478,7 @@ def interpret(text: str, allow_llm: bool = True) -> Interpretation:
         try:
             r = classify_llm(text)
             if r.proposals:
-                return r
+                return _cross_check(r, text)
         except (urllib.error.URLError, urllib.error.HTTPError,
                 TimeoutError, OSError, KeyError, IndexError,
                 ValueError, RuntimeError) as exc:
