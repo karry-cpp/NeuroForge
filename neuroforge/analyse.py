@@ -217,6 +217,8 @@ the app's rules say those events engage. Write the explanation.
 RULES
 - Use ONLY the pathways and brain parts listed in the brief. Naming anything \
 else breaks the highlight the reader sees beside your text.
+- These are simulation variables, not measurements of the reader. Never write \
+that their neurons, synapses or grey matter changed.
 - Second person, calm and plain. No hype, no diagnosis, no advice.
 - 3 to 5 sentences. No headings, no bullet points, no markdown.
 - Begin by connecting what they wrote to what was recognised."""
@@ -275,6 +277,9 @@ def _clean(reply: str) -> str:
 
 
 def _acceptable(reply: str) -> bool:
+    # Length only. A phrase blocklist was tried and removed: it cannot
+    # distinguish a claim from a disclaimer, and the honest sentence
+    # "nothing here prunes your neurons" trips every version of it.
     return len(reply) >= 40
 
 
@@ -282,7 +287,7 @@ def analyse(text: str, event_ids: List[str],
             allow_llm: bool = True,
             timeout: float = 0.0) -> Dict[str, Any]:
     """Explain an entry. Anatomy from the rules, prose from a model if one is
-    connected and its answer passes the honesty checks."""
+    connected and its answer is usable."""
     targets = targets_for(event_ids)
     fallback = _from_rules(targets)
     out: Dict[str, Any] = dict(targets)

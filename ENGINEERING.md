@@ -63,6 +63,21 @@ the wrong change.
 - "Your PFC gained gray matter today"
 - "This visualization measures your real brain"
 
+**Where this is enforced.** In fixed UI copy, which is the only text the app
+authors itself, and in both system prompts (`llm.py` rule 2 for the chat,
+`analyse.py` `_SYSTEM` for the reading), which instruct the model not to make
+claims of that shape. There is deliberately **no output-side blocklist**:
+`analyse._acceptable()` checks length only. A substring filter cannot tell an
+affirmative claim from a disclaimer, and the correct sentence "nothing here
+prunes your neurons" contains the banned string.
+
+The real protection is structural rather than lexical, and it is stronger: the
+model never supplies anatomy. Regions, pathways and edges are derived from
+`EVENT_TYPES` and `EDGES` before any model is called (`analyse.py`), the
+classifier may only choose from a fixed event list, and an unrecognised answer
+is discarded. A model that ignored the prompt could write one bad sentence; it
+could not invent an effect, a region, or a change to the record.
+
 ---
 
 ## 3. Architecture and why

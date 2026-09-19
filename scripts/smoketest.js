@@ -1,6 +1,12 @@
 /* Headless smoke test of the WebGL frontend.
  * Loads the app in Edge, waits for the loader to clear, exercises the three
- * modes and a log action, and reports any console/page errors. */
+ * modes and a log action, and reports any console/page errors.
+ *
+ * DESTRUCTIVE: it logs an event and runs the 8-week demo against the live
+ * server, so it overwrites whatever simulation state is loaded. It resets to
+ * day 0 on the way out - without that it left the app at day 56, and the
+ * next person to open the browser found a pre-advanced brain with no
+ * explanation. Do not point it at a session you care about. */
 
 const { chromium } = require('playwright-core');
 
@@ -146,6 +152,13 @@ const URL = process.argv[2] || 'http://127.0.0.1:8770/';
     requestAnimationFrame(tick);
   }));
   console.log('FPS (software rasteriser):', fps);
+
+  // Leave the simulation as we found it, not at day 56.
+  const reset = await page.evaluate(async () => {
+    const r = await fetch('/api/sim/reset', { method: 'POST' });
+    return (await r.json())?.day;
+  }).catch(() => null);
+  console.log('RESET to day:', reset);
 
   console.log('\nERRORS:', errors.length);
   errors.slice(0, 12).forEach(e => console.log('  ! ' + e));
