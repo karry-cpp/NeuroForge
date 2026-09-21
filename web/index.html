@@ -162,7 +162,17 @@ things move backwards. A model value, not a measurement.">
     <button data-state="current" class="active">Current</button>
     <button data-state="target">Target</button>
     <button data-state="compare">Compare</button>
+    <button data-state="visualise">Visualise</button>
   </div>
+
+  <!-- Live read-out of a description. Nothing here is recorded; it is a
+       look-up of what the rules associate with the words, not a log. -->
+  <div id="visBar" class="hidden">
+    <input id="visText" type="text" autocomplete="off" spellcheck="false"
+           placeholder="say what you are feeling &mdash; e.g. my chest is tight and I keep replaying it">
+    <div id="visRead"></div>
+  </div>
+
   <div id="stateHint">simulated strengths from your logged practice</div>
 </div>
 

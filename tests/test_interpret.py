@@ -169,6 +169,42 @@ class TestKeywordCoverage(unittest.TestCase):
             self.assertLessEqual(p.confidence, 0.62)
 
 
+class TestPresentTenseAndFeelings(unittest.TestCase):
+    """The Visualise tab asks what someone feels *now*.
+
+    Every cue was written for a log entry: past tense, describing a
+    behaviour. "I keep replaying it" and "my chest is tight" matched nothing.
+    """
+
+    def top(self, text):
+        r = interpret(text, allow_llm=False)
+        return r.proposals[0].event if r.proposals else None
+
+    def test_present_tense_rumination(self):
+        for text in ("i keep replaying the argument",
+                     "i can't stop thinking about it",
+                     "it is stuck in my head",
+                     "i keep going over what he said"):
+            self.assertEqual(self.top(text), "rumination", text)
+
+    def test_felt_stress(self):
+        for text in ("my chest is tight",
+                     "i feel anxious",
+                     "my heart is racing",
+                     "i am on edge and cannot relax"):
+            self.assertEqual(self.top(text), "stress_high", text)
+
+    def test_anxious_but_did_it_is_still_exposure(self):
+        # "anxious" alone is stress; the longer cue has to keep winning, or
+        # facing the thing gets recorded as merely having been stressed.
+        self.assertEqual(
+            self.top("i was really anxious but i still went"), "exposure")
+
+    def test_past_tense_still_works(self):
+        self.assertEqual(self.top("i kept replaying it"), "rumination")
+        self.assertEqual(self.top("it was a stressful week"), "stress_high")
+
+
 class TestDiscoveryCachesAMiss(unittest.TestCase):
     """A machine with no model runner must not re-probe on every entry.
 

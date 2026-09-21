@@ -50,6 +50,7 @@ const App = {
   mode: 'anatomy', viewState: 'current', replayDay: null,
   playing: false, playT: 0,
   focus: 'regulation',
+  visSeq: 0,
   eventById: {}, nodeById: {}, cortexById: {}, cortexByIndex: {},
   structById: {},
 };
@@ -248,6 +249,8 @@ function wire() {
     b.classList.add('active');
     setViewState(b.dataset.state);
   });
+
+  wireVisualiser();
 
   /* ---- actions ---- */
   $('#btnTrigger').onclick  = openTrigger;
@@ -591,8 +594,31 @@ function uniformWeights(v) {
 }
 
 function setViewState(s) {
+  const prev = App.viewState;
   App.viewState = s;
   const hint = $('#stateHint');
+  const vis = s === 'visualise';
+
+  $('#visBar').classList.toggle('hidden', !vis);
+  // Twenty lit tubes run through the middle of the brain. Against them a
+  // glowing region reads as background, which defeats the point of this view.
+  App.circuits.setVisible(!vis && App.mode !== 'anatomy');
+
+  if (prev === 'visualise' && !vis) {
+    App.visSeq++;                       // strand any reply still in flight
+    $('#visText').value = '';
+    $('#visRead').textContent = '';
+    clearSelection();
+    App.viewer.clearGlow();
+  }
+
+  if (vis) {
+    hint.textContent =
+      'what the rules associate with your words \u00b7 nothing is recorded';
+    $('#visText').focus();
+    return;
+  }
+
   if (s === 'current') {
     App.circuits.update(App.state.weights);
     App.circuits.setGhost(false);
@@ -1075,6 +1101,116 @@ function lightFor(eventIds) {
     }
   }
   App.circuits.focus(pathways.size ? [...pathways] : null);
+}
+
+/* ======================================================================= */
+/*  VISUALISE                                                               */
+/* ======================================================================= */
+
+/**
+ * Read a description as it is typed and light what the rules associate with
+ * it. Nothing is logged: this is a look-up, not an entry, and it is the one
+ * place in the app where text reaches the brain without a confirmation step
+ * precisely because it changes nothing.
+ */
+function wireVisualiser() {
+  const box = $('#visText'), read = $('#visRead');
+  if (!box) return;
+  let timer = 0;
+
+  const clear = () => {
+    App.visSeq++;
+    read.textContent = '';
+    clearSelection();
+    App.viewer.clearGlow();
+  };
+
+  box.addEventListener('input', () => {
+    clearTimeout(timer);
+    const text = box.value.trim();
+    // Two or three letters cannot match anything but will happily fire a
+    // request on every keystroke of a word being typed.
+    if (text.length < 4) { clear(); return; }
+    read.textContent = 'reading\u2026';
+    timer = setTimeout(() => runVisualise(text), 350);
+  });
+
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      clearTimeout(timer);
+      const text = box.value.trim();
+      if (text.length >= 4) runVisualise(text);
+    } else if (e.key === 'Escape') {
+      box.value = '';
+      clear();
+    }
+  });
+}
+
+async function runVisualise(text) {
+  // Typing outruns the round trip, so replies can land out of order. Only the
+  // newest request is allowed to touch the brain.
+  const seq = ++App.visSeq;
+  const read = $('#visRead');
+  let interp;
+  try {
+    interp = (await API.interpret(text)).interpretation;
+  } catch {
+    if (seq === App.visSeq) read.textContent = 'could not read that';
+    return;
+  }
+  if (seq !== App.visSeq) return;
+
+  const props = interp.proposals.slice(0, 2);
+  if (!props.length) {
+    read.textContent = 'nothing recognised yet';
+    clearSelection();
+    App.viewer.clearGlow();
+    return;
+  }
+  const how = interp.source.startsWith('llm:') ? 'read by model'
+                                               : 'matched by keyword';
+  read.innerHTML = props.map(p => `<b>${p.label}</b>`).join('<span class="sep">·</span>')
+                 + `<span class="sep">·</span><i>${how}</i>`;
+  visualiseLight(props.map(p => p.event));
+}
+
+/**
+ * Brighter than lightFor(): selectMany dissolves the shell, so the engaged
+ * parts read as solid objects inside glass rather than competing with opaque
+ * tissue. Measured at 9x the brightness of unlit tissue.
+ */
+function visualiseLight(eventIds) {
+  const evs = eventIds.map(id => App.eventById[id]).filter(Boolean);
+  if (!evs.length) return;
+
+  const best = new Map();
+  for (const ev of evs) {
+    for (const [n, a] of eventTargets(ev).lit) {
+      if (!(best.get(n) >= a)) best.set(n, a);
+    }
+  }
+
+  const labels = new Set(), structs = new Set();
+  for (const n of best.keys()) {
+    if (n.structure && App.structById[n.structure]) structs.add(n.structure);
+    if (n.cortex) {
+      const r = App.cortexById[n.cortex];
+      if (r) labels.add(r.label_index);
+    }
+  }
+  if (!labels.size && !structs.size) return;
+
+  App.viewer.selectMany([...labels], [...structs], null);
+  App.viewer.clearGlow();
+  for (const [n, a] of best) {
+    const g = Math.min(1, a) * 0.9;
+    if (n.structure) App.viewer.setStructureGlow(n.structure, g);
+    if (n.cortex) {
+      const r = App.cortexById[n.cortex];
+      if (r) App.viewer.setRegionGlow(r.label_index, g);
+    }
+  }
 }
 
 /**

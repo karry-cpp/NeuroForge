@@ -57,6 +57,8 @@ the wrong change.
 | **REAL (green) vs MODEL (amber) tags** | Every panel separates established science from this program's invention. Preserve this in any new UI. |
 | **Zero pip dependencies** | Runs on a bare Python install. stdlib only. |
 | **Anatomical data is never committed** | See `LICENSE`. `neuroforge/_assets/` is gitignored. |
+| **Visualise hides the circuits** | Measured: the 20 edge tubes are 44% of all lit pixels (0.46 lit fraction with them, 0.26 without). A glowing region cannot compete with that, so the tab that exists to show glow turns them off. Do not "restore" them. |
+| **Visualise logs nothing** | It is the one place text reaches the brain with no confirmation step, and that is only acceptable because it changes no state. If it ever gains the ability to log, it needs the same confirm-first flow as the log dock. |
 
 ### Forbidden phrases (user-specified)
 - "I just pruned your neurons"

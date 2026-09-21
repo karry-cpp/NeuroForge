@@ -126,6 +126,12 @@ _CUES: Dict[str, List[str]] = {
     "rumination": [
         "ruminat", "spiral", "couldn't stop thinking", "could not stop thinking",
         "kept replaying", "went over and over", "overthought", "stewed",
+        # The Visualise tab is typed in the present tense - "I keep
+        # replaying", not "I kept replaying" - and the past-tense-only cues
+        # matched none of it.
+        "keep replaying", "replaying", "keep going over", "going over it",
+        "can't stop thinking", "cannot stop thinking", "overthinking",
+        "stuck in my head", "in my head all", "won't leave my head",
     ],
     "avoidance": [
         "avoided", "cancelled", "canceled", "put it off", "procrastinat",
@@ -159,6 +165,13 @@ _CUES: Dict[str, List[str]] = {
     "stress_high": [
         "stressful", "high stress", "overwhelmed", "deadline", "burnt out",
         "burned out", "under pressure", "frazzled",
+        # Felt states, not behaviours. The Visualise tab asks what someone
+        # feels right now, and every cue above describes a situation instead.
+        # These map to raised stress, which is what the event actually does -
+        # they are not being read as anxiety disorders.
+        "anxious", "on edge", "chest is tight", "chest feels tight",
+        "heart is racing", "heart racing", "panicky", "tense", "wound up",
+        "can't relax", "cannot relax", "keyed up", "on high alert",
     ],
     "recovery": [
         "rested", "downtime", "saw friends", "time with", "recovered",
