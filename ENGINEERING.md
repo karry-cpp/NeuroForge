@@ -58,6 +58,9 @@ the wrong change.
 | **Zero pip dependencies** | Runs on a bare Python install. stdlib only. |
 | **Anatomical data is never committed** | See `LICENSE`. `neuroforge/_assets/` is gitignored. |
 | **Visualise hides the circuits** | Measured: the 20 edge tubes are 44% of all lit pixels (0.46 lit fraction with them, 0.26 without). A glowing region cannot compete with that, so the tab that exists to show glow turns them off. Do not "restore" them. |
+| **Visualise highlights at most 3 parts** | A selected cortical parcel renders in the opaque pass - the shader forces `a = 1.0` for it - so highlighting everything an event touches filled the middle of the brain with solid slabs and read as the opposite of focus. `VIS_MAX_PARTS`. The full list stays reachable as clickable chips in the panel. |
+| **Visualise casts out most structures** | `VIS_CAST`. With all 14 present the view was a pile of overlapping lumps under 11 pins. Cortical glow cannot substitute: `if (ghosted) glow = 0.0` in the cortex shader means an unselected region shows no glow at all while focusing. Cerebellum stays purely to anchor the bottom of the mesh. |
+| **The analysis brief gives every part a role** | Listing parts as a bare comma list left the model nothing to say about any of them, so it wrote about pathways and named no part at all - measured 0 of 9 on one entry. Each part now carries the edges it sits on, and the prompt demands the exact token (`vlPFC`, not "the ventrolateral prefrontal area") because the panel turns those tokens into links. 0/9 -> 6/9. |
 | **Visualise logs nothing** | It is the one place text reaches the brain with no confirmation step, and that is only acceptable because it changes no state. If it ever gains the ability to log, it needs the same confirm-first flow as the log dock. |
 
 ### Forbidden phrases (user-specified)
@@ -161,8 +164,10 @@ Both are documented in `DK_TO_LABEL` so they can be argued with.
 > fsaverage is an average of 40 brains. It is not the user's brain. The scene
 > metadata says so.
 
-**`SCENE_VERSION` in `build.py` is currently 10. Bump it whenever geometry
-changes**, or a stale cache in `neuroforge/_cache/` will be served silently.
+**`SCENE_VERSION` in `build.py` is currently 12. Bump it whenever geometry
+or any published colour changes**, or a stale cache in `neuroforge/_cache/`
+will be served silently. Cortical colours also live in `REGION_COLORS` in
+`viewer.js`; keep the two in step.
 
 ### Subcortical geometry
 

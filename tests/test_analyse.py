@@ -117,6 +117,21 @@ class TestRulesText(unittest.TestCase):
 
 class TestCleaning(unittest.TestCase):
 
+    def test_named_parts_whole_word_and_case_insensitive(self):
+        # Measured failure: "hypothalamus" was read as the thalamus, and a
+        # capitalised "Amygdala" opening a sentence was missed.
+        reply = ("The hypothalamus reacts. Amygdala keeps flagging it, and "
+                 "the insula registers the ache.")
+        got = analyse._named_parts(reply, ["thalamus", "amygdala", "aINS",
+                                           "pINS"])
+        self.assertEqual(got, ["amygdala", "aINS"])
+
+    def test_open_ended_classifies_when_no_events_given(self):
+        a = analyse.analyse("i ruminated and my forehead started hurting",
+                            [], allow_llm=False, open_ended=True)
+        self.assertIn("rumination", [e["id"] for e in a["events"]])
+        self.assertTrue(a["regions"] or a["structures"])
+
     def test_think_block_is_removed(self):
         out = analyse._clean("<think>reasoning here</think>The answer.")
         self.assertEqual(out, "The answer.")

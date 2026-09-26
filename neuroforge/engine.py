@@ -68,6 +68,10 @@ class Simulation:
         self._today_lr_bonus: float = 1.0
         self._today_events: List[str] = []
         self.listeners: List[Callable[[], None]] = []
+        # Days of profile-built history that happened before day 0, and the
+        # answers that produced it. Zero / None for the default brain.
+        self.warmup_days: int = 0
+        self.profile: Optional[dict] = None
         self._record()
 
     # ----------------------------------------------------------- events
@@ -141,6 +145,25 @@ class Simulation:
         self._emit()
 
     # ------------------------------------------------------- read-outs
+    def rebase(self, warmup_days: int, profile: Optional[dict]) -> None:
+        """Make the brain as it is now the new day 0.
+
+        Used after replaying a self-described history: that history shaped
+        the starting point, but it is not logged practice and must not count
+        towards streaks, practice totals or the gap already closed.
+        """
+        self.day = 0
+        self.log = []
+        self.history = []
+        self._start_vector = list(self.current.vector())
+        self._start_pathways = self.current.pathway_profile()
+        self._reps_today.clear()
+        self._today_lr_bonus = 1.0
+        self._today_events = []
+        self.warmup_days = warmup_days
+        self.profile = profile
+        self._record()
+
     @property
     def alignment(self) -> float:
         return alignment(self.current)
@@ -205,6 +228,8 @@ class Simulation:
             "history": [asdict(h) for h in self.history],
             "start_vector": self._start_vector,
             "start_pathways": self._start_pathways,
+            "warmup_days": self.warmup_days,
+            "profile": self.profile,
         }
 
     def save(self, path: str) -> None:
@@ -225,6 +250,8 @@ class Simulation:
         sim.history = [DaySnapshot(**h) for h in d["history"]]
         sim._start_vector = d.get("start_vector", sim._start_vector)
         sim._start_pathways = d.get("start_pathways", sim._start_pathways)
+        sim.warmup_days = int(d.get("warmup_days", 0))
+        sim.profile = d.get("profile")
         return sim
 
     # ------------------------------------------------------------ demo

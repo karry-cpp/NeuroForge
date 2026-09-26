@@ -41,7 +41,9 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(
 #      does at a subcortical structure.
 # v11: pathway endpoints taken from measured geometry instead of a hand-typed
 #      table, and the curves between them routed through white matter.
-SCENE_VERSION = 11
+# v12: region/structure colours re-picked so co-highlighted parts differ
+#      (vlPFC, vmPFC, caudate and mPFC were all near the same blue).
+SCENE_VERSION = 12
 
 
 # --------------------------------------------------------------------------

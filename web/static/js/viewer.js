@@ -38,6 +38,7 @@ const CORTEX_VERT = /* glsl */`
   varying vec4  vReg;
   varying vec4  vNetCol;
   varying float vSel;
+  varying float vSelFaint;
   varying float vNetOn;
   varying float vHasNet;
   varying float vDepthFold;
@@ -51,7 +52,9 @@ const CORTEX_VERT = /* glsl */`
     // selected colour scattered across the brain. Only label 26 was immune,
     // because nothing can interpolate past the highest index in use.
     vReg = texture2D(uRegionTex, vec2((aLabel + 0.5) / 32.0, 0.5));
-    vSel = texture2D(uSelTex, vec2((aLabel + 0.5) / 32.0, 0.5)).r;
+    vec4 sel = texture2D(uSelTex, vec2((aLabel + 0.5) / 32.0, 0.5));
+    vSel = sel.r;
+    vSelFaint = sel.g;
     vNetCol = texture2D(uNetTex, vec2((aNetwork + 0.5) / 8.0, 0.5));
     vNetOn = (uNetActive >= 0.0 && abs(aNetwork - uNetActive) < 0.5)
              ? 1.0 : 0.0;
@@ -84,6 +87,7 @@ const CORTEX_FRAG = /* glsl */`
   varying vec4  vReg;
   varying vec4  vNetCol;
   varying float vSel;
+  varying float vSelFaint;
   varying float vNetOn;
   varying float vHasNet;
   varying float vDepthFold;
@@ -99,8 +103,9 @@ const CORTEX_FRAG = /* glsl */`
   uniform float uSelLayer;      // 1 = this pass draws ONLY the selection, opaque
   uniform float uGhostAlpha;    // user control: visibility of everything unselected
   uniform float uHighlight;     // user control: strength of the selected region
+  uniform float uTrueColor;     // 1 = selected parts show their swatch colour, not a tissue tint
   uniform sampler2D uRegionTex; // RGB = region colour, A = live glow
-  uniform sampler2D uSelTex;    // R > 0.5 = this label is currently selected
+  uniform sampler2D uSelTex;    // R = selected, G = selected but faint (another part has focus)
   uniform sampler2D uNetTex;    // RGB = Yeo network colour
   uniform float uNetMode;       // 1 = colour cortex by network, not by region
   uniform float uNetActive;     // highlighted network (-1 = none)
@@ -130,6 +135,9 @@ const CORTEX_FRAG = /* glsl */`
       ? (vHasNet > 0.5 ? 0.62 : 0.0)
       : reg.a;
     bool isActive = netMode ? (vNetOn > 0.5) : (vSel > 0.5);
+    bool faint = isActive && !netMode && vSelFaint > 0.5;
+    // Same rate as the selected-structure pulse, so the two breathe together.
+    float breath = 0.5 + 0.5 * sin(uTime * 3.4);
 
     // The selection is drawn by a separate opaque pass that writes depth, so
     // that it occludes properly instead of blending with whatever the far
@@ -148,13 +156,18 @@ const CORTEX_FRAG = /* glsl */`
     // only the regions wired to simulation nodes showed the effect.
     bool ghosted = (uDim > 0.5) && !isActive;
     if (ghosted) glow = 0.0;
+    if (faint) glow *= 0.3;
 
-    float tint = glow * 0.55 + (isActive ? 0.50 * uHighlight : 0.0);
-    albedo = mix(albedo, rc, clamp(tint, 0.0, 0.9));
+    // Faint parts keep the full Anatomy colour and are only dimmed: cutting
+    // the tint as well turned dlPFC's cyan into grey and lost which part it is.
+    bool trueCol = uTrueColor > 0.5 && isActive;
+    float tint = glow * 0.55
+               + (isActive ? (trueCol ? 0.92 : 0.50) * uHighlight : 0.0);
+    albedo = mix(albedo, rc, clamp(tint, 0.0, trueCol ? 0.95 : 0.9));
     // Tinting mixes toward a single colour, which erases the gyral/sulcal
     // contrast the albedo above was built from. Re-apply it, or a selected
     // region flattens into one bright block and stops reading as tissue.
-    albedo *= 1.0 - vDepthFold * (isActive ? 0.45 : 0.0);
+    albedo *= 1.0 - vDepthFold * (isActive ? (trueCol ? 0.25 : 0.45) : 0.0);
 
     // ---- lighting --------------------------------------------------------
     float key  = clamp(dot(N, normalize(uKeyDir)), 0.0, 1.0);
@@ -187,11 +200,16 @@ const CORTEX_FRAG = /* glsl */`
     lit += rc * glow * fres * 1.1;
 
     // active region gets a travelling shimmer so it reads as "selected"
-    if (isActive) {
+    if (isActive && !faint) {
       float band = sin(vWorld.z * 0.09 - uTime * 2.4) * 0.5 + 0.5;
       lit += rc * band * 0.07 * uHighlight;
       lit += rc * fres * 0.18 * uHighlight;
+      lit += rc * (0.05 + 0.15 * breath) * uHighlight;
     }
+    // Lighting and tone mapping mute a tinted surface; lean it back toward
+    // the flat swatch colour while keeping enough shading to read as tissue.
+    if (trueCol) lit = mix(lit, rc * (0.50 + 0.40 * wrap), 0.78);
+    if (faint) lit *= 0.62;
 
     // ---- opacity ---------------------------------------------------------
     float a = uOpacity;
@@ -244,7 +262,7 @@ const CORTEX_FRAG = /* glsl */`
 /* ------------------------------------------------------------------ colours */
 
 const REGION_COLORS = {
-  0: 0x000000, 1: 0x22d3ee, 2: 0x0ea5e9, 3: 0x3b82f6, 4: 0x6366f1,
+  0: 0x000000, 1: 0x22d3ee, 2: 0x8b5cf6, 3: 0x3b82f6, 4: 0x1d4ed8,
   5: 0xfbbf24, 6: 0xf59e0b, 7: 0xa3a3a3, 8: 0x94a3b8, 9: 0xa8a29e,
   10: 0x78716c,
   // Self-referential regions, given their own colours so they stop being
@@ -265,9 +283,9 @@ const REGION_COLORS = {
   21: 0xfcd34d,   // fusiform
   22: 0x5eead4,   // superior temporal
   23: 0x86efac,   // supramarginal
-  24: 0xfb7185,   // anterior insula
+  24: 0xfda4af,   // anterior insula
   25: 0x9f1239,   // posterior insula
-  26: 0x60a5fa,   // medial prefrontal
+  26: 0x93c5fd,   // medial prefrontal
 };
 
 /* Yeo 2011 seven-network colours. These are close to the palette used in the
@@ -569,6 +587,7 @@ export class Viewer {
       uSelLayer: { value: 0.0 },
       uGhostAlpha: { value: 1.0 },
       uHighlight: { value: 1.0 },
+      uTrueColor: { value: 0.0 },
       uKeyDir: { value: this.keyDir },
       uRimColor: { value: new THREE.Color(0x8fa6bd) },
       uRegionTex: { value: this.regionTex },
@@ -699,7 +718,6 @@ export class Viewer {
     const layer = document.getElementById('pinLayer');
     layer.innerHTML = '';
     for (const s of this.sceneData.structures) {
-      if (s.order > 35) continue;             // skip scaffolding structures
       const el = document.createElement('div');
       el.className = 'pin';
       el.style.color = s.color;
@@ -708,7 +726,38 @@ export class Viewer {
       layer.appendChild(el);
       this.pins.set(s.id, {
         el, pos: new THREE.Vector3(...s.centroids[0]), meta: s,
+        scaffold: s.order > 35,     // unlabelled unless a filter names it
       });
+    }
+    // Cortex pins exist only for setPinFilter(); a label on every parcel
+    // would bury the brain.
+    for (const r of this.sceneData.cortical_regions || []) {
+      const c = r.centroids || [];
+      if (!c.length) continue;
+      const el = document.createElement('div');
+      el.className = 'pin';
+      el.style.color = r.color;
+      el.innerHTML = `<span class="knob"></span><span class="txt">${r.short}</span>`;
+      el.onclick = () => this._onPick({ kind: 'cortex', id: r.label_index });
+      layer.appendChild(el);
+      this.pins.set(r.id, {
+        el, pos: new THREE.Vector3(...c[0]), meta: r, cortex: true,
+        alt: c[1] ? new THREE.Vector3(...c[1]) : null,
+      });
+    }
+  }
+
+  /** Label only these part ids (structures or cortex). Null = default pins. */
+  setPinFilter(ids) {
+    this._pinFilter = ids ? new Set(ids) : null;
+  }
+
+  /** Short marks after a pin's name, e.g. { amygdala: '▲' }. Null clears. */
+  setPinBadges(map) {
+    for (const [id, pin] of this.pins) {
+      const txt = pin.el.querySelector('.txt');
+      const mark = map?.[id] || '';
+      txt.textContent = pin.meta.short + (mark ? ` ${mark}` : '');
     }
   }
 
@@ -716,20 +765,28 @@ export class Viewer {
     if (!this.pins.size) return;
     const v = new THREE.Vector3();
     const camPos = this.camera.position;
+    const only = this._pinFilter;
     for (const [id, pin] of this.pins) {
-      const mesh = this.structures.get(id);
-      const visible = this.showPins && this.showSubcort && mesh?.visible;
-      if (!visible) { pin.el.style.display = 'none'; continue; }
+      const shown = pin.cortex
+        ? !!only?.has(id) && (this.hemi === 'L' ? !!this.cortexL?.visible
+                                                : !!this.cortexR?.visible)
+        : this.showSubcort && !!this.structures.get(id)?.visible
+          && (only ? only.has(id) : !pin.scaffold);
+      if (!this.showPins || !shown) { pin.el.style.display = 'none'; continue; }
       pin.el.style.display = '';
-      v.copy(pin.pos).applyMatrix4(this.root.matrixWorld).project(this.camera);
+      const pos = this.hemi === 'L' && pin.alt ? pin.alt : pin.pos;
+      v.copy(pos).applyMatrix4(this.root.matrixWorld).project(this.camera);
       const x = (v.x * 0.5 + 0.5) * innerWidth;
       const y = (-v.y * 0.5 + 0.5) * innerHeight;
       pin.el.style.transform =
         `translate(-50%,-50%) translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;
       // fade pins on the far side of the brain
-      const world = pin.pos.clone().applyMatrix4(this.root.matrixWorld);
+      const world = pos.clone().applyMatrix4(this.root.matrixWorld);
       const facing = world.normalize().dot(camPos.clone().normalize());
-      pin.el.classList.toggle('faded', facing < -0.15 || v.z > 1);
+      const faint = !!this._emph && (pin.cortex
+        ? !this._emph.labels.has(pin.meta.label_index)
+        : !this._emph.structs.has(id));
+      pin.el.classList.toggle('faded', faint || facing < -0.15 || v.z > 1);
     }
   }
 
@@ -809,11 +866,25 @@ export class Viewer {
     for (const [id, m] of this.structures) m.visible = this._structVisible(id);
   }
 
-  /** Three independent reasons a structure may be hidden, in one place. */
+  /** Restrict which structures exist at all. Null restores the full set. */
+  setStructureCast(ids) {
+    this._castStructs = ids ? new Set(ids) : null;
+    for (const [id, m] of this.structures) m.visible = this._structVisible(id);
+    this._styleStructures();
+  }
+
+  /** Everything not selected reads as glass, structures included. */
+  setGlassMode(on) {
+    this._glassMode = !!on;
+    this._styleStructures();
+  }
+
+  /** Four independent reasons a structure may be hidden, in one place. */
   _structVisible(id) {
     return this.showSubcort
         && !this._hiddenStructs?.has(id)
-        && !this._mutedStructs?.has(id);
+        && !this._mutedStructs?.has(id)
+        && (!this._castStructs || this._castStructs.has(id));
   }
 
   toggleStructure(id, on) {
@@ -879,6 +950,8 @@ export class Viewer {
       if (i >= 0 && i < 32) this.selData[i * 4] = 255;
     }
     this.selTex.needsUpdate = true;
+    this._selLabels = labels;
+    this._emph = null;
 
     // Once the shell dissolves, every faded structure inside shows through it
     // at once. That is useful context when the selection IS a structure, and
@@ -896,6 +969,25 @@ export class Viewer {
     this._styleStructures();
   }
 
+  /**
+   * Within the current selection, bring these parts forward; the rest stay
+   * selected but go faint. Empty or null makes every selected part equal,
+   * unless `fadeRest` - then everything selected but not listed is faint.
+   */
+  setEmphasis(labelIndices, structureIds, fadeRest = false) {
+    const labels = new Set(labelIndices || []);
+    const structs = new Set(structureIds || []);
+    this._emph = labels.size || structs.size || fadeRest
+      ? { labels, structs } : null;
+    for (const i of this._selLabels || []) {
+      if (i >= 0 && i < 32) {
+        this.selData[i * 4 + 1] = this._emph && !labels.has(i) ? 255 : 0;
+      }
+    }
+    this.selTex.needsUpdate = true;
+    this._styleStructures();
+  }
+
   _styleStructures() {
     const { structs, any, cortexOnly } = this._selState
       || { structs: new Set(), any: false, cortexOnly: false };
@@ -908,9 +1000,10 @@ export class Viewer {
 
     for (const [id, m] of this.structures) {
       const on = structs.has(id);
+      const faint = on && !!this._emph && !this._emph.structs.has(id);
       const meta = this.structMeta.get(id);
       m.material.emissiveIntensity = on
-        ? 1.15 * hl : (xray ? 0.34 : 0.16) * ga;
+        ? 0.38 * hl : (xray ? 0.34 : 0.16) * ga;
       // Unselected structures fade almost out too, so the selection is the
       // only solid thing on screen. Kept low because ~15 translucent shells
       // with depthWrite off stack additively and read far stronger than a
@@ -922,22 +1015,33 @@ export class Viewer {
       // they are the subject rather than clutter. Without this the cortex
       // went to glass while they stayed solid, and the brain as a whole did
       // not read as transparent at all.
-      const modeOnly = !any && this._modeGhost;
+      //
+      // Visualise is the exception: until the text names something, nothing
+      // is the subject, so it asks for glass and the structures follow the
+      // cortex instead of floating in front of it.
+      const glass = !!this._glassMode;
+      const modeOnly = !any && this._modeGhost && !glass;
+      // The silhouette pair anchors the bottom of the specimen. Gating that
+      // on cortexOnly meant any selection that included a structure dropped
+      // the cerebellum to 0.03 and the brain read as floating.
       const fade = modeOnly
         ? 0.45 * ga
-        : ((cortexOnly && SILHOUETTE.has(id)) ? 0.16 : 0.03) * ga;
-      const dim = modeOnly || (any && !on);
-      m.material.opacity = dim
-        ? Math.min(1, (meta.opacity ?? 1) * fade) : (meta.opacity ?? 1);
-      m.material.depthWrite = !dim;
-      m.userData.pulse = on;
+        : (SILHOUETTE.has(id) ? 0.16 : 0.03) * ga;
+      const dim = modeOnly || (any && !on) || (glass && !on);
+      const baseOp = meta.opacity ?? 1;
+      m.material.opacity = dim ? Math.min(1, baseOp * fade)
+        : faint ? baseOp * 0.25 : baseOp;
+      m.material.depthWrite = !dim && !faint;
+      m.userData.pulse = on && !faint;
+      m.userData.faint = faint;
       m.visible = this._structVisible(id);
 
       // Kept grey while the cortex is ghosted; a saturated cerebellum beside
       // desaturated cortex stops reading as the same specimen.
       const base = m.userData.baseColor;
       if (base) {
-        const mute = cortexOnly && SILHOUETTE.has(id) ? 0.82 : 0.0;
+        const mute = !on && (cortexOnly || glass) && SILHOUETTE.has(id)
+          ? 0.82 : 0.0;
         m.material.color.copy(base).lerp(GHOST_GREY, mute);
         m.material.emissive.copy(base).lerp(GHOST_GREY, mute);
       }
@@ -945,7 +1049,7 @@ export class Viewer {
     for (const [id, pin] of this.pins) {
       // _updatePins() hides the pin of any structure that is not visible, so
       // muted ones need no handling here.
-      pin.el.classList.toggle('faded', any && !structs.has(id));
+      if (!pin.cortex) pin.el.classList.toggle('faded', any && !structs.has(id));
     }
   }
 
@@ -959,6 +1063,11 @@ export class Viewer {
   setHighlight(v) {
     this.cortexUniforms.uHighlight.value = v;
     this._styleStructures();
+  }
+
+  /** Selected cortex shows its sidebar swatch colour instead of a tint. */
+  setTrueColor(on) {
+    this.cortexUniforms.uTrueColor.value = on ? 1.0 : 0.0;
   }
 
   /** Per-region activation glow, 0..1, driven by the simulation. */
@@ -1035,27 +1144,25 @@ export class Viewer {
     this.cortexUniforms.uTime.value = t;
 
 
-    // structure pulse + glow
+    // structure glow. Steady and in the structure's own colour: the pulse
+    // and swelling read as white-hot flicker rather than as the part.
     const hl = this.cortexUniforms.uHighlight.value;
     const ga = this.cortexUniforms.uGhostAlpha.value;
     const focusing = this.cortexUniforms.uDim.value > 0.5;
     for (const m of this.structures.values()) {
       const g = m.userData.glow || 0;
       const on = m.userData.pulse;
-      const pulse = on ? 0.55 + 0.45 * Math.sin(t * 3.4) : 0;
       const base = this.cortexUniforms.uXray.value > 0.5 ? 0.34 : 0.16;
       // The appearance sliders must be applied here, not only where the
       // selection is styled: this loop rewrites emissiveIntensity every
       // frame and would otherwise pull it straight back to the default.
       const want = on
-        ? (base + g * 1.5 + pulse * 0.7) * hl
+        ? (base + 0.22 + g * 0.6) * hl
+        : m.userData.faint ? base * 0.6 * hl
         : (base + g * 1.5) * (focusing ? ga : 1.0);
       m.material.emissiveIntensity +=
         (want - m.material.emissiveIntensity) * Math.min(1, dt * 8);
-      if (g > 0.01) {
-        const s = 1 + g * 0.07 * (0.6 + 0.4 * Math.sin(t * 5));
-        m.scale.setScalar(s);
-      } else if (m.scale.x !== 1) {
+      if (m.scale.x !== 1) {
         m.scale.lerp(new THREE.Vector3(1, 1, 1), Math.min(1, dt * 6));
       }
     }

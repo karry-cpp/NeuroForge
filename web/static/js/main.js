@@ -45,12 +45,35 @@ const FOCUS = {
 
 const inFocus = (kind, id) => App.focus === 'all' || FOCUS[kind].includes(id);
 
+/* Visualise keeps only the structures this app has an emotional-regulation
+ * story for. With all fourteen present the middle of the brain was a pile of
+ * overlapping lumps under eleven pins.
+ *
+ * The striatum is caudate + putamen because that is what it is here: there is
+ * no single striatum mesh, and structures.py is explicit that the dorsal /
+ * ventral split is a drawing convention rather than a boundary in tissue.
+ * Cerebellum earns its place by anchoring the bottom of the specimen - without
+ * it the brain reads as floating.
+ *
+ * The cortical half of the same shortlist is FOCUS.cortex: mPFC, vmPFC, dlPFC,
+ * dACC, sgACC, PCC, aINS. Parcels are part of the cortex mesh, so they need no
+ * cast - they simply appear when selected. */
+const VIS_CAST = ['amygdala', 'hippocampus', 'acc', 'sgacc',
+                  'caudate', 'putamen',
+                  'brainstem', 'cerebellum'];
+const VIS_MAX_PARTS = 3;
+// Structure glow in Visualise. Selected meshes already pulse, and 0.4 on top
+// of that bloomed past the tissue.
+const VIS_GLOW = 0.1, VIS_GLOW_FOCUS = 0.4;
+
 const App = {
   scene: null, model: null, state: null,
   mode: 'anatomy', viewState: 'current', replayDay: null,
   playing: false, playT: 0,
   focus: 'regulation',
   visSeq: 0,
+  visParts: [], visFocus: null,
+  curFocus: null, curDraft: '',
   eventById: {}, nodeById: {}, cortexById: {}, cortexByIndex: {},
   structById: {},
 };
@@ -174,6 +197,28 @@ function wire() {
 
   /* ---- picking ---- */
   V.onPick((hit) => {
+    // Current's engagement view is a reading, not a selection: clicks inspect.
+    if (currentLocked()) {
+      if (!hit) { if (App.curFocus) focusCurrentPart(null); return; }
+      if (hit.kind === 'edge') return;
+      const id = hit.kind === 'structure'
+        ? hit.id : App.cortexByIndex[hit.id]?.id;
+      if (engagedRows().some(r => r.part === id)) focusCurrentPart(id);
+      if (hit.kind === 'structure') showStructure(hit.id, true);
+      else showCortex(hit.id, true, hit.fine, hit.network);
+      return;
+    }
+    // Visualise highlights stay until Reset: a click only inspects.
+    if (visualiseLocked()) {
+      if (!hit) { focusVisualisePart(null); return; }
+      if (hit.kind === 'edge') return;
+      const id = hit.kind === 'structure'
+        ? hit.id : App.cortexByIndex[hit.id]?.id;
+      if (App.visParts.includes(id)) focusVisualisePart(id);
+      if (hit.kind === 'structure') showStructure(hit.id, true);
+      else showCortex(hit.id, true, hit.fine, hit.network);
+      return;
+    }
     if (!hit) { clearSelection(); Panel.close(); return; }
     if (hit.kind === 'edge') { showEdge(hit.id); return; }
     V.select(hit);
@@ -244,11 +289,7 @@ function wire() {
   });
 
   /* ---- state toggle ---- */
-  $$('#stateSeg button').forEach(b => b.onclick = () => {
-    $$('#stateSeg button').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-    setViewState(b.dataset.state);
-  });
+  $$('#stateSeg button').forEach(b => b.onclick = () => selectState(b.dataset.state));
 
   wireVisualiser();
 
@@ -289,7 +330,7 @@ function wire() {
       if (Modal.isOpen()) Modal.close();
       else if (LogDock.isOpen()) { endPreview(); LogDock.close(); }
       else if (Panel.isOpen()) Panel.close();
-      else if (V.selected) clearSelection();
+      else if (V.selected && !visualiseLocked() && !currentLocked()) clearSelection();
     }
     // Anywhere the user can type. Guarding only INPUT meant the log dock's
     // <textarea> swallowed every space into the replay toggle, and typing a
@@ -495,6 +536,17 @@ function buildCortexList() {
   host.querySelectorAll('.structrow').forEach(row => {
     row.onclick = () => {
       const li = Number(row.dataset.cortex);
+      if (visualiseLocked() || currentLocked()) {
+        const id = App.cortexByIndex[li]?.id;
+        if (visualiseLocked() && App.visParts.includes(id)) {
+          focusVisualisePart(id);
+        }
+        if (currentLocked() && engagedRows().some(r => r.part === id)) {
+          focusCurrentPart(id);
+        }
+        showCortex(li, true);
+        return;
+      }
       const already = row.classList.contains('on');
       host.querySelectorAll('.structrow').forEach(x => x.classList.remove('on'));
       if (already) { App.viewer.select(null); Panel.close(); return; }
@@ -535,6 +587,16 @@ function buildStructureList() {
         App.viewer.toggleStructure(id, !on);
         return;
       }
+      if (visualiseLocked() || currentLocked()) {
+        if (visualiseLocked() && App.visParts.includes(id)) {
+          focusVisualisePart(id);
+        }
+        if (currentLocked() && engagedRows().some(r => r.part === id)) {
+          focusCurrentPart(id);
+        }
+        showStructure(id, true);
+        return;
+      }
       App.viewer.select({ kind: 'structure', id });
       showStructure(id);
       focusStructure(id);
@@ -566,8 +628,21 @@ function setMode(mode) {
   App.circuits.setVisible(circ);
   $('#statebar').classList.toggle('hidden', !sim);
   $('#btnTimeline').classList.toggle('hidden', !sim);
-  $('#timeline').classList.toggle('hidden', !sim);
+  $('#timeline').classList.toggle('hidden',
+    !sim || App.viewState === 'current' || App.viewState === 'visualise');
   $('#metricWrap').style.opacity = sim ? '1' : '.32';
+
+  // The Visualise panel and its cast belong to one state of one mode; it no
+  // longer sits inside #statebar, so it does not get hidden with it.
+  if (!sim) {
+    $('#visPanel').classList.add('hidden');
+    $('#curPanel').classList.add('hidden');
+    App.viewer.setStructureCast(null);
+    App.viewer.setGlassMode(false);
+    App.viewer.setTrueColor(false);
+    App.viewer.setPinFilter(null);
+    App.viewer.setPinBadges(null);
+  }
 
   if (mode === 'anatomy') {
     Panel.close();
@@ -598,16 +673,35 @@ function setViewState(s) {
   App.viewState = s;
   const hint = $('#stateHint');
   const vis = s === 'visualise';
+  const cur = s === 'current';
 
-  $('#visBar').classList.toggle('hidden', !vis);
+  $('#visPanel').classList.toggle('hidden', !vis);
+  $('#curPanel').classList.toggle('hidden', !cur);
   // Twenty lit tubes run through the middle of the brain. Against them a
-  // glowing region reads as background, which defeats the point of this view.
-  App.circuits.setVisible(!vis && App.mode !== 'anatomy');
+  // glowing region reads as background, which defeats the point of both
+  // Visualise and Current - they are about parts, not connections.
+  App.circuits.setVisible(!vis && !cur && App.mode !== 'anatomy');
+  App.viewer.setStructureCast(vis ? VIS_CAST : null);
+  // Until the text names something, nothing is the subject: the structures
+  // should be as see-through as the cortex, not floating solid in front of it.
+  App.viewer.setGlassMode(vis || cur);
+  // Current names parts by their sidebar colour, so show that colour.
+  App.viewer.setTrueColor(cur);
+  App.viewer.setPinFilter(vis ? App.visParts : null);
+  if (!cur) App.viewer.setPinBadges(null);
+  // applyState() re-enters here; put the highlight back rather than lose it.
+  if (vis && App.visParts.length) applyVisualise(App.visFocus);
+  // The timeline is a wide bar across the lower half; it sits on top of the
+  // brain and the panel. Current can still open it from the Timeline button.
+  if ((vis || cur) && prev !== s) $('#timeline').classList.add('hidden');
+  $('#btnTimeline').classList.toggle('hidden', vis);
 
   if (prev === 'visualise' && !vis) {
-    App.visSeq++;                       // strand any reply still in flight
     $('#visText').value = '';
-    $('#visRead').textContent = '';
+    clearVisualise();
+  }
+  if (prev === 'current' && !cur) {
+    App.curFocus = null;
     clearSelection();
     App.viewer.clearGlow();
   }
@@ -619,11 +713,15 @@ function setViewState(s) {
     return;
   }
 
-  if (s === 'current') {
-    App.circuits.update(App.state.weights);
-    App.circuits.setGhost(false);
-    hint.textContent = 'simulated strengths built by your logged practice';
-  } else if (s === 'target') {
+  if (cur) {
+    hint.textContent =
+      'more / less engaged than a typical starting point \u00b7 a model, '
+      + 'not a measurement';
+    renderCurrent();
+    return;
+  }
+
+  if (s === 'target') {
     App.circuits.update(App.state.targets);
     App.circuits.setGhost(false);
     hint.textContent = 'the behavioural direction you have chosen to practise';
@@ -759,6 +857,10 @@ function chatHighlight(ids) {
   // selectMany() already handles buried cortex: it flips to x-ray when a
   // hidden region is selected and restores the previous mode afterwards.
   V.selectMany(labels, structs);
+  
+  V.clearGlow();
+  for (const s of structs) V.setStructureGlow(s, 0.8);
+  for (const l of labels) V.setRegionGlow(l, 0.8);
 }
 
 /* ------------------------------------------------------------- compare */
@@ -1108,108 +1210,480 @@ function lightFor(eventIds) {
 /* ======================================================================= */
 
 /**
- * Read a description as it is typed and light what the rules associate with
- * it. Nothing is logged: this is a look-up, not an entry, and it is the one
- * place in the app where text reaches the brain without a confirmation step
- * precisely because it changes nothing.
+ * Read a description and light what the rules associate with it. Nothing is
+ * logged: this is a look-up, not an entry, and it is the one place in the app
+ * where text reaches the brain without a confirmation step precisely because
+ * it changes nothing.
  */
 function wireVisualiser() {
-  const box = $('#visText'), read = $('#visRead');
-  if (!box) return;
-  let timer = 0;
+  const box = $('#visText'), go = $('#visGo'), reset = $('#visReset');
+  if (!box || !go) return;
 
-  const clear = () => {
-    App.visSeq++;
-    read.textContent = '';
-    clearSelection();
-    App.viewer.clearGlow();
+  go.onclick = () => {
+    const text = box.value.trim();
+    if (text.length < 4) { box.focus(); return; }
+    runVisualise(text);
   };
 
-  box.addEventListener('input', () => {
-    clearTimeout(timer);
-    const text = box.value.trim();
-    // Two or three letters cannot match anything but will happily fire a
-    // request on every keystroke of a word being typed.
-    if (text.length < 4) { clear(); return; }
-    read.textContent = 'reading\u2026';
-    timer = setTimeout(() => runVisualise(text), 350);
-  });
+  reset.onclick = () => { box.value = ''; clearVisualise(); box.focus(); };
+  reset.disabled = true;
+  box.addEventListener('input', () => { reset.disabled = !box.value.trim(); });
 
   box.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      clearTimeout(timer);
-      const text = box.value.trim();
-      if (text.length >= 4) runVisualise(text);
-    } else if (e.key === 'Escape') {
-      box.value = '';
-      clear();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go.click(); }
+    else if (e.key === 'Escape') { reset.click(); }
   });
 }
 
+/** Move the segmented control and the view together. */
+function selectState(s) {
+  $$('#stateSeg button').forEach(b =>
+    b.classList.toggle('active', b.dataset.state === s));
+  setViewState(s);
+}
+
+function clearVisualise() {
+  App.visSeq++;                          // strand any reply still in flight
+  App.visParts = [];
+  App.visFocus = null;
+  $('#visRead').textContent = '';
+  $('#visOut').innerHTML = '';
+  $('#visReset').disabled = !$('#visText').value.trim();
+  clearSelection();
+  App.viewer.clearGlow();
+  const vis = App.viewState === 'visualise';
+  App.viewer.setPinFilter(vis ? [] : null);
+  if (vis) App.viewer.setStructureCast(VIS_CAST);
+}
+
+function visualiseLocked() {
+  return App.mode === 'simulation' && App.viewState === 'visualise'
+      && App.visParts.length > 0;
+}
+
+/* ======================================================================= */
+/*  CURRENT                                                                 */
+/* ======================================================================= */
+
+const engagedRows = () => (App.state?.engagement || [])
+  .filter(r => r.level !== 'typical'
+            && (App.structById[r.part] || App.cortexById[r.part]));
+
+function currentLocked() {
+  return App.mode === 'simulation' && App.viewState === 'current'
+      && engagedRows().length > 0;
+}
+
+/**
+ * Show which parts the model has more or less engaged than typical.
+ *
+ * Part colours stay the part's own, so the brain reads the same as in every
+ * other view. More engaged parts carry a glow in their own colour, less
+ * engaged ones stay visible but faint, typical ones drop to glass, and the
+ * arrows on the labels say which is which. Clicking a part brings it forward
+ * and fades everything else, without moving the camera.
+ */
+function renderCurrent() {
+  const V = App.viewer;
+  const rows = (App.state?.engagement || [])
+    .filter(r => App.structById[r.part] || App.cortexById[r.part]);
+  const lit = rows.filter(r => r.level !== 'typical');
+  if (!lit.some(r => r.part === App.curFocus)) App.curFocus = null;
+  const focus = App.curFocus;
+
+  const labels = [], structs = [], badges = {};
+  const up = { labels: [], structs: [] };
+  for (const r of lit) {
+    badges[r.part] = r.level === 'more' ? '\u25b2' : '\u25bc';
+    const forward = focus ? r.part === focus : r.level === 'more';
+    if (App.structById[r.part]) {
+      structs.push(r.part);
+      if (forward) up.structs.push(r.part);
+    } else {
+      const li = App.cortexById[r.part].label_index;
+      labels.push(li);
+      if (forward) up.labels.push(li);
+    }
+  }
+
+  V.clearGlow();
+  if (lit.length) {
+    V.selectMany(labels, structs, null);
+    V.setEmphasis(up.labels, up.structs, true);
+    for (const r of lit) {
+      if (focus ? r.part !== focus : r.level !== 'more') continue;
+      const g = Math.min(0.4, 0.1 + Math.abs(r.score));
+      if (App.structById[r.part]) V.setStructureGlow(r.part, g);
+      else V.setRegionGlow(App.cortexById[r.part].label_index, g + 0.2);
+    }
+  } else {
+    V.selectMany([], []);
+  }
+  V.setPinFilter(lit.map(r => r.part));
+  V.setPinBadges(badges);
+
+  $('#curPanel').innerHTML = currentPanelHtml(rows, !!App.state?.profile);
+  $$('#curPanel .eng-row').forEach(b => {
+    b.classList.toggle('on', b.dataset.part === focus);
+    b.onclick = () => focusCurrentPart(
+      App.curFocus === b.dataset.part ? null : b.dataset.part);
+  });
+  $$('#curPanel [data-quiz]').forEach(b => b.onclick = openQuiz);
+  const clear = $('#curPanel [data-clear]');
+  if (clear) clear.onclick = async () => {
+    if (!confirm('Clear your answers and everything logged since?')) return;
+    App.curFocus = null;
+    App.curDraft = '';
+    applyState(await API.reset(true));
+  };
+  wirePatterns();
+}
+
+/** The "add a pattern" box. The panel re-renders on every state change, so
+ *  the draft lives on App rather than in the textarea. */
+function wirePatterns() {
+  const box = $('#curNote'), add = $('#curNoteAdd'), msg = $('#curNoteMsg');
+  if (!box) return;
+  box.value = App.curDraft || '';
+  box.oninput = () => { App.curDraft = box.value; };
+  box.onkeydown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); add.click(); }
+  };
+  add.onclick = async () => {
+    const text = box.value.trim();
+    if (text.length < 4) { box.focus(); return; }
+    add.disabled = box.disabled = true;
+    add.textContent = 'Reading\u2026';
+    msg.textContent = '';
+    let r;
+    try { r = await API.addNote(text); }
+    catch (err) { r = { added: false, reason: err.message }; }
+    if (!r.added) {
+      add.disabled = box.disabled = false;
+      add.textContent = 'Add';
+      msg.textContent = r.reason || 'Could not add that.';
+      return;
+    }
+    App.curDraft = '';
+    App.curFocus = null;
+    applyState(r.state);
+    const read = (r.read_as || []).map(p => p.label.toLowerCase()).join(', ');
+    const by = (r.source || '').startsWith('llm:')
+      ? `read by ${r.source.slice(4)}` : 'matched by keyword';
+    const out = $('#curNoteMsg');
+    if (out) out.textContent = `Added - ${by} as: ${read}.`;
+  };
+  $$('#curPanel [data-del]').forEach(b => b.onclick = async () => {
+    applyState((await API.deleteNote(Number(b.dataset.del))).state);
+  });
+}
+
+function focusCurrentPart(id) {
+  App.curFocus = id;
+  renderCurrent();
+}
+
+// Scores in this model run to about +-0.5; the bar is full at that.
+const ENG_FULL = 0.5;
+
+function currentPanelHtml(rows, hasProfile) {
+  const row = (r) => {
+    const p = App.structById[r.part] || App.cortexById[r.part];
+    const w = Math.min(50, Math.abs(r.score) / ENG_FULL * 50);
+    const why = r.why?.meaning ? `
+      <div class="eng-why">${escHtml(cap(r.why.meaning))}.${
+        r.why.reasons?.length
+          ? ` <span>Mostly because you ${escHtml(joinAnd(r.why.reasons))}.</span>`
+          : ''}</div>` : '';
+    return `
+      <button class="eng-row ${r.level}" data-part="${r.part}">
+        <div class="eng-top">
+          <span class="eng-sw" style="background:${p.color}"></span>
+          <span class="eng-name">${escHtml(p.short || p.name)}</span>
+          <span class="eng-bar"><i style="width:${w.toFixed(1)}%"></i></span>
+          <span class="eng-arrow">${r.level === 'more' ? '\u25b2' : '\u25bc'}</span>
+        </div>${why}
+      </button>`;
+  };
+  const more = rows.filter(r => r.level === 'more');
+  const less = rows.filter(r => r.level === 'less');
+  const balanced = rows.filter(r => r.level === 'typical' && r.basis === 'balanced');
+  const unknown = rows.filter(r => r.level === 'typical' && r.basis !== 'balanced');
+  const name = (r) => escHtml((App.structById[r.part] || App.cortexById[r.part]).short);
+
+  return `
+    <div class="vis-kicker">CURRENT</div>
+    <div class="vis-title">How your brain is engaged</div>
+    <div class="cur-sub">compared with a typical starting point
+      <span class="tag model">MODEL</span></div>
+    ${hasProfile ? '' : `
+      <div class="cur-empty">Nothing to show yet: the app knows nothing about
+        you, so every part is "typical". Describe how you tend to react below,
+        and each thing you add shows which parts your habits lean on more or
+        less than a typical person's.</div>`}
+    ${more.length ? `<div class="cur-group">MORE ENGAGED</div>${more.map(row).join('')}` : ''}
+    ${less.length ? `<div class="cur-group">LESS ENGAGED</div>${less.map(row).join('')}` : ''}
+    ${balanced.length ? `<div class="cur-group">BALANCED</div>
+      <div class="eng-typical">${balanced.map(name).join(', ')}
+        <span>What you described reaches these, but pulls them both ways or
+          about as much as typical.</span></div>` : ''}
+    ${unknown.length && hasProfile ? `<div class="cur-group">NOT ENOUGH INFORMATION YET</div>
+      <div class="eng-typical">${unknown.map(name).join(', ')}
+        <span>Nothing you have said touches these yet. Describe more, or
+          answer a few situations.</span></div>` : ''}
+    <div class="cur-group">YOUR PATTERNS</div>
+    ${patternsHtml()}
+    <textarea id="curNote" rows="2" maxlength="400"
+      placeholder="How do you tend to react? e.g. I bottle things up at work and snap at home"></textarea>
+    <div class="vis-row">
+      <button id="curNoteAdd" class="cur-go">Add</button>
+      <button class="cur-ghost" data-quiz>${hasProfile && Object.keys(
+        App.state.profile.answers || {}).length
+          ? 'Edit situations' : 'Answer situations'}</button>
+      <span id="curNoteMsg" class="cur-msg"></span>
+    </div>
+    ${hasProfile ? `
+      <details class="cur-base">
+        <summary>What counts as "typical"?</summary>
+        <p>Everything you say is turned into how often you do each kind of
+          thing - going over things, lashing out, pausing, reframing and so on
+          - and six weeks of that are run through the app's fixed rules.
+          "Typical" is the same six weeks for an invented person who answers
+          every situation with an even mix of all its options. Anything you
+          have not said counts as typical, so it moves nothing. It is a
+          reference point inside this model, not a population average, and
+          more engaged is not better or worse.</p>
+      </details>
+      <div class="cur-foot">
+        <span>Built from what you have described and logged. Not a scan, not
+          an assessment.</span>
+        <button class="cur-ghost" data-clear>Clear</button>
+      </div>` : ''}`;
+}
+
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const joinAnd = (xs) => xs.length < 2 ? xs.join('')
+  : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
+
+function patternsHtml() {
+  const notes = App.state?.profile?.notes || [];
+  if (!notes.length) {
+    return `<div class="eng-typical">Nothing described yet. Add as many as
+      you like, whenever you think of one - each refines the picture.</div>`;
+  }
+  return notes.map((n, i) => {
+    const read = Object.keys(n.events || {})
+      .map(e => App.eventById[e]?.label.toLowerCase() || e).join(', ');
+    return `
+      <div class="cur-note">
+        <div>\u201c${escHtml(n.text)}\u201d
+          <span>read as ${escHtml(read)}</span></div>
+        <button class="cur-x" data-del="${i}" title="Remove">\u2715</button>
+      </div>`;
+  }).join('');
+}
+
+async function openQuiz() {
+  let qs;
+  try { qs = (await API.profileQuestions()).questions; }
+  catch { toast('Could not load the questions'); return; }
+  const prev = App.state?.profile?.answers || {};
+  const had = (qid, oid) => [].concat(prev[qid] || []).includes(oid);
+  Modal.open(`
+    <div class="m-title">How you tend to react</div>
+    <div class="m-sub">Everyday situations - all optional. Tick everything you
+      usually do, not what you wish you did; skip any that do not fit, and
+      they count as typical. Written for this app: not a validated
+      questionnaire, and nothing here is an assessment.</div>
+    <form id="quiz">
+      ${qs.map(q => `
+        <fieldset class="qz-q" data-q="${q.id}">
+          <legend>${escHtml(q.prompt)}</legend>
+          <div class="qz-opts">${q.options.map(o => `
+            <label class="qz-opt">
+              <input type="checkbox" name="${q.id}" value="${o.id}"
+                ${had(q.id, o.id) ? 'checked' : ''}>
+              <span>${escHtml(o.label)}</span>
+            </label>`).join('')}
+          </div>
+        </fieldset>`).join('')}
+      <fieldset class="qz-q">
+        <legend>Anything else about how you handle things? <i>optional - you
+          can add more later from the Current panel</i></legend>
+        <textarea id="quizText" rows="3" maxlength="400"
+          placeholder="e.g. I bottle things up at work and then snap at home"
+          ></textarea>
+      </fieldset>
+      <div class="qz-foot">
+        <span id="quizMsg">Read by the same classifier as your log entries -
+          the language model when one is running. Anything you have logged
+          is kept.</span>
+        <button type="submit" class="primary">Update my current brain</button>
+      </div>
+    </form>`);
+
+  $('#quiz').onsubmit = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const answers = {};
+    for (const q of qs) {
+      const ids = $$(`#quiz input[name="${q.id}"]:checked`).map(i => i.value);
+      if (ids.length) answers[q.id] = ids;
+    }
+    const btn = form.querySelector('button[type=submit]');
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Building\u2026';
+    try {
+      const r = await API.setProfile(answers, $('#quizText').value);
+      Modal.close();
+      App.replayDay = null;
+      App.curFocus = null;
+      applyState(r.state);
+      const read = (r.read_as || []).map(p => p.label.toLowerCase());
+      toast('Current brain updated from your answers',
+        read.length ? `Your description read as: ${read.join(', ')}` : '');
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = label;
+      toast('Could not build it', err.message);
+    }
+  };
+}
+
 async function runVisualise(text) {
-  // Typing outruns the round trip, so replies can land out of order. Only the
-  // newest request is allowed to touch the brain.
+  // Pressing Explain twice can put two replies in the air. Only the newest
+  // is allowed to touch the brain.
   const seq = ++App.visSeq;
-  const read = $('#visRead');
-  let interp;
+  const read = $('#visRead'), out = $('#visOut'), go = $('#visGo');
+  go.disabled = true;
+  read.textContent = '';
+  out.innerHTML = '';
+
+  explainVisualise(text, [], seq).finally(() => {
+    if (seq === App.visSeq) go.disabled = false;
+  });
+}
+
+/** Prose from the model, anatomy from the rules. */
+async function explainVisualise(text, eventIds, seq) {
+  const out = $('#visOut');
+  out.innerHTML = '<p class="vis-prose">working out what that engages…</p>';
+  let a;
   try {
-    interp = (await API.interpret(text)).interpretation;
+    a = (await API.analyse(text, eventIds, true)).analysis;
   } catch {
-    if (seq === App.visSeq) read.textContent = 'could not read that';
+    if (seq === App.visSeq) out.innerHTML = '';
     return;
   }
   if (seq !== App.visSeq) return;
 
-  const props = interp.proposals.slice(0, 2);
-  if (!props.length) {
-    read.textContent = 'nothing recognised yet';
-    clearSelection();
-    App.viewer.clearGlow();
-    return;
-  }
-  const how = interp.source.startsWith('llm:') ? 'read by model'
-                                               : 'matched by keyword';
-  read.innerHTML = props.map(p => `<b>${p.label}</b>`).join('<span class="sep">·</span>')
-                 + `<span class="sep">·</span><i>${how}</i>`;
-  visualiseLight(props.map(p => p.event));
+  const evs = a.events || [];
+  $('#visRead').textContent = evs.length
+    ? `read as: ${evs.map(e => e.label.toLowerCase()).join(', ')}` : '';
+
+  const parts = [...(a.structures || []), ...(a.regions || [])]
+    .filter(id => App.structById[id] || App.cortexById[id]);
+
+  visualiseParts(parts);
+
+  out.innerHTML = `
+    <p class="vis-prose">${linkifyParts(a.text, parts)}</p>
+    ${parts.length ? `<div class="vis-parts">${parts.map(id =>
+        `<button class="vis-part" data-part="${id}">${partLabel(id)}</button>`
+      ).join('')}</div>` : ''}`;
+
+  // Every part stays lit; clicking one brings it forward and fades the rest.
+  // Clicking it again, or empty space, puts them all back on equal terms.
+  $$('#visOut .vis-part').forEach(b => b.onclick = () => {
+    const id = b.dataset.part;
+    focusVisualisePart(App.visFocus === id ? null : id);
+  });
 }
 
+// The camera stays put: re-aiming it at the part moved the whole brain.
+function focusVisualisePart(id) {
+  $$('#visOut .vis-part').forEach(x =>
+    x.classList.toggle('on', !!id && x.dataset.part === id));
+  applyVisualise(id);
+}
+
+const escHtml = (s) => s.replace(/[&<>"]/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
 /**
- * Brighter than lightFor(): selectMany dissolves the shell, so the engaged
- * parts read as solid objects inside glass rather than competing with opaque
- * tissue. Measured at 9x the brightness of unlit tissue.
+ * Turn every brain part the prose names into a control that finds it.
+ *
+ * Done here rather than by asking the model for markers: small local models
+ * emit them unreliably, and this has to work identically for the rule-based
+ * text produced when no model is connected.
  */
-function visualiseLight(eventIds) {
-  const evs = eventIds.map(id => App.eventById[id]).filter(Boolean);
-  if (!evs.length) return;
-
-  const best = new Map();
-  for (const ev of evs) {
-    for (const [n, a] of eventTargets(ev).lit) {
-      if (!(best.get(n) >= a)) best.set(n, a);
+function linkifyParts(text, ids) {
+  const byName = new Map();
+  for (const id of ids) {
+    const p = App.structById[id] || App.cortexById[id];
+    for (const n of [id, p?.short, p?.name]) {
+      if (n) byName.set(String(n).toLowerCase(), id);
     }
   }
+  const safe = escHtml(text);
+  if (!byName.size) return safe;
 
-  const labels = new Set(), structs = new Set();
-  for (const n of best.keys()) {
-    if (n.structure && App.structById[n.structure]) structs.add(n.structure);
-    if (n.cortex) {
-      const r = App.cortexById[n.cortex];
-      if (r) labels.add(r.label_index);
-    }
+  // Longest first, so "sgACC" is claimed before "ACC" can take its tail.
+  const names = [...byName.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const rx = new RegExp(`\\b(${names.join('|')})\\b`, 'gi');
+  return safe.replace(rx, (m) => {
+    const id = byName.get(m.toLowerCase());
+    return id
+      ? `<button class="vis-part inline" data-part="${id}">${m}</button>` : m;
+  });
+}
+
+function partLabel(id) {
+  const p = App.structById[id] || App.cortexById[id];
+  return p?.short || p?.name || p?.label || id;
+}
+
+/** Light the engaged parts and label only them. They stay until Reset. */
+function visualiseParts(parts) {
+  App.visParts = parts || [];
+  App.visFocus = null;
+  if (!App.visParts.length) {
+    clearSelection();
+    App.viewer.clearGlow();
   }
-  if (!labels.size && !structs.size) return;
+  applyVisualise();
+}
 
-  App.viewer.selectMany([...labels], [...structs], null);
+/** (Re)apply the Visualise highlight; `focus` glows a little brighter. */
+function applyVisualise(focus = null) {
+  const parts = App.visParts;
+  App.visFocus = focus;
+  App.viewer.setPinFilter(parts);
+  if (!parts.length) return;
+
+  const labels = new Map(), structs = [];
+  for (const id of parts) {
+    if (App.structById[id]) structs.push(id);
+    else if (App.cortexById[id]) labels.set(id, App.cortexById[id].label_index);
+  }
+
+  // Rules can name parts outside the cast (thalamus, NAcc, VTA); a hidden
+  // mesh would take the highlight and show nothing.
+  App.viewer.setStructureCast([...new Set([...VIS_CAST, ...structs])]);
+  App.viewer.selectMany([...labels.values()], structs, null);
+  App.viewer.setEmphasis(
+    labels.has(focus) ? [labels.get(focus)] : [],
+    structs.includes(focus) ? [focus] : []);
   App.viewer.clearGlow();
-  for (const [n, a] of best) {
-    const g = Math.min(1, a) * 0.9;
-    if (n.structure) App.viewer.setStructureGlow(n.structure, g);
-    if (n.cortex) {
-      const r = App.cortexById[n.cortex];
-      if (r) App.viewer.setRegionGlow(r.label_index, g);
-    }
+
+  for (const id of structs) {
+    App.viewer.setStructureGlow(id, id === focus ? VIS_GLOW_FOCUS : VIS_GLOW);
+  }
+  for (const [id, label] of labels) {
+    App.viewer.setRegionGlow(label, id === focus ? 0.7 : 0.4);
   }
 }
 
@@ -1313,7 +1787,7 @@ async function scrubTo(day) {
   App.replayDay = day;
   $('#tlLive').classList.remove('active');
   const s = await API.replay(day);
-  App.state = { ...App.state, weights: s.weights };
+  App.state = { ...App.state, weights: s.weights, engagement: s.engagement };
   $('#dayNum').textContent = day;
   $('#tlDay').textContent = `day ${day}`;
   App.timeline.set(App.state, day);

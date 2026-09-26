@@ -27,10 +27,16 @@ export const API = {
   // Suggests events from free text. Does not change the simulation.
   interpret: (text) => jpost('/api/sim/interpret', { text }),
   interpretConfig: () => jget('/api/sim/interpret/config'),
-  analyse:  (text, events) => jpost('/api/sim/analyse', { text, events }),
+  analyse:  (text, events, open = false) =>
+    jpost('/api/sim/analyse', { text, events, open }),
+  profileQuestions: () => jget('/api/profile/questions'),
+  setProfile: (answers, text) => jpost('/api/profile', { answers, text }),
+  addNote: (text) => jpost('/api/profile/note', { text }),
+  deleteNote: (index) => jpost('/api/profile/note/delete', { index }),
   advance:  (days = 1) => jpost('/api/sim/advance', { days }),
   replay:   (day) => jpost('/api/sim/replay', { day }),
-  reset:    () => jpost('/api/sim/reset'),
+  reset:    (clearProfile = false) =>
+    jpost('/api/sim/reset', { clear_profile: clearProfile }),
   demo:     (weeks = 12, adherence = 0.72) =>
               jpost('/api/sim/demo', { weeks, adherence }),
   save:     (name) => jpost('/api/sim/save', { name }),

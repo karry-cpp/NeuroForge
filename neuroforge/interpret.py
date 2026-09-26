@@ -132,6 +132,10 @@ _CUES: Dict[str, List[str]] = {
         "keep replaying", "replaying", "keep going over", "going over it",
         "can't stop thinking", "cannot stop thinking", "overthinking",
         "stuck in my head", "in my head all", "won't leave my head",
+        # Described habits ("I go over things for hours") rather than
+        # single episodes - the Current tab's patterns box reads these.
+        "going over", "go over things", "go over conversations", "dwell",
+        "lie awake thinking", "lie awake going", "overthink", "brood",
     ],
     "avoidance": [
         "avoided", "cancelled", "canceled", "put it off", "procrastinat",
@@ -139,6 +143,8 @@ _CUES: Dict[str, List[str]] = {
         "skipped", "dreading", "dreaded", "bailed", "made an excuse",
         "stayed home", "called in sick", "pulled out of", "didn't show",
         "did not show", "couldn't face", "could not face", "chickened out",
+        "put things off", "avoid ", "bottle things up", "bottle it up",
+        "keep it to myself", "push it down",
     ],
     "reactive_outburst": [
         "lost my temper", "snapped at", "shouted", "yelled", "lashed out",
@@ -149,6 +155,7 @@ _CUES: Dict[str, List[str]] = {
         "got angry", "was angry", "so angry", "really angry", "angry at",
         "furious", "raged", "went off at", "snapped", "swore at",
         "lost it with", "kicked off",
+        "snap at", "lose my temper", "blow up", "lash out", "shout at",
     ],
     "sleep_good": [
         "slept well", "good sleep", "rested well", "full night",
@@ -157,6 +164,7 @@ _CUES: Dict[str, List[str]] = {
     "sleep_poor": [
         "slept badly", "bad sleep", "barely slept", "couldn't sleep",
         "could not sleep", "insomnia", "up all night", "broken sleep",
+        "lie awake", "can't sleep", "cannot sleep", "sleep badly",
     ],
     "exercise": [
         "ran ", "went for a run", "gym", "workout", "worked out", "cycled",
@@ -181,7 +189,8 @@ _CUES: Dict[str, List[str]] = {
 
 # Words that flip the meaning of a cue when they come right before it.
 _NEGATORS = ("didn't ", "did not ", "couldn't ", "could not ", "never ",
-             "failed to ", "wasn't able to ", "was not able to ")
+             "failed to ", "wasn't able to ", "was not able to ",
+             "don't ", "do not ", "rarely ")
 
 _INTENSIFIERS = {
     "really": 1.25, "very": 1.2, "extremely": 1.4, "so ": 1.15,

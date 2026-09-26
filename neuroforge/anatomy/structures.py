@@ -279,7 +279,7 @@ STRUCTURES: List[Structure] = [
 
     # ----------------------------------------------------- basal ganglia
     Structure(
-        "caudate", "Caudate nucleus", "Caudate", "Basal ganglia", "#60a5fa",
+        "caudate", "Caudate nucleus", "Caudate", "Basal ganglia", "#a3e635",
         True, _caudate, (17, 2, 14), order=20, aseg="caudate",
         what_it_is="A long C-shaped nucleus following the curve of the "
                    "lateral ventricle. With the putamen it forms the "
@@ -298,7 +298,7 @@ STRUCTURES: List[Structure] = [
     ),
 
     Structure(
-        "putamen", "Putamen", "Putamen", "Basal ganglia", "#38bdf8", True,
+        "putamen", "Putamen", "Putamen", "Basal ganglia", "#2dd4bf", True,
         _putamen, (27, 2, 0), order=21, aseg="putamen",
         what_it_is="A lens-shaped nucleus lateral to the globus pallidus; "
                    "the sensorimotor input zone of the striatum.",
@@ -333,7 +333,7 @@ STRUCTURES: List[Structure] = [
     ),
 
     Structure(
-        "accumbens", "Nucleus accumbens", "NAcc", "Basal ganglia", "#f0abfc",
+        "accumbens", "Nucleus accumbens", "NAcc", "Basal ganglia", "#e879f9",
         True, _accumbens, (10, 13, -9), order=23, aseg="accumbens",
         what_it_is="The ventral striatum, where the caudate and putamen "
                    "merge below.",
@@ -354,7 +354,7 @@ STRUCTURES: List[Structure] = [
 
     # ---------------------------------------------------------- others
     Structure(
-        "thalamus", "Thalamus", "Thalamus", "Subcortical", "#c4b5fd", True,
+        "thalamus", "Thalamus", "Thalamus", "Subcortical", "#e7c9a0", True,
         _thalamus, (11, -18, 7), order=30, aseg="thalamus",
         what_it_is="A pair of egg-shaped nuclear complexes at the centre "
                    "of the brain.",
@@ -369,7 +369,7 @@ STRUCTURES: List[Structure] = [
 
     Structure(
         "vta", "Ventral tegmental area", "VTA", "Neuromodulatory",
-        "#fb923c", True, _vta, (5, -20, -14), order=31,
+        "#ea580c", True, _vta, (5, -20, -14), order=31,
         what_it_is="A small midbrain nucleus containing dopaminergic "
                    "neurons.",
         where_it_is="Midbrain, near the midline, below the thalamus.",
@@ -519,7 +519,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
                "replicate.",
     ),
     CorticalRegion(
-        "vlPFC", 2, "Ventrolateral prefrontal cortex", "vlPFC", "#0ea5e9",
+        "vlPFC", 2, "Ventrolateral prefrontal cortex", "vlPFC", "#8b5cf6",
         what_it_is="The lower outer frontal surface, including the "
                    "inferior frontal gyrus (roughly BA 44/45/47).",
         where_it_is="Front of the brain, lower and to the side - roughly "
@@ -555,7 +555,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
                "and the simulation reproduces that.",
     ),
     CorticalRegion(
-        "mPFC", 26, "Medial prefrontal cortex", "mPFC", "#60a5fa",
+        "mPFC", 26, "Medial prefrontal cortex", "mPFC", "#93c5fd",
         what_it_is="The inner surface of the frontal lobe above the "
                    "ventromedial sector: the medial wall of the superior "
                    "frontal gyrus, anterior to the supplementary motor area.",
@@ -611,7 +611,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
                "attracts stronger claims than the evidence supports.",
     ),
     CorticalRegion(
-        "aINS", 24, "Anterior insula", "Ant. insula", "#fb7185",
+        "aINS", 24, "Anterior insula", "Ant. insula", "#fda4af",
         what_it_is="The front portion of the insula, a lobe of cortex "
                    "folded away inside the lateral sulcus. It is not "
                    "visible from any outside view of the brain.",
@@ -653,7 +653,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
         buried=True,
     ),
     CorticalRegion(
-        "OFC", 4, "Orbitofrontal cortex", "OFC", "#6366f1",
+        "OFC", 4, "Orbitofrontal cortex", "OFC", "#1d4ed8",
         what_it_is="The frontal cortex resting directly above the eye "
                    "sockets.",
         where_it_is="The underside of the frontal lobes.",
@@ -1025,7 +1025,7 @@ GROUPS: List[Dict[str, Any]] = [
         "id": "ventral_striatum",
         "name": "Ventral striatum",
         "short": "Ventral striatum",
-        "color": "#f472b6",
+        "color": "#e879f9",
         "regions": [],
         "structures": ["accumbens"],
         "what": (

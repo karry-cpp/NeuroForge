@@ -16,6 +16,10 @@ the WebGL renderer, which is what keeps the two independent.
   POST /api/sim/reset       start over
   POST /api/sim/demo        fast-forward a scripted practice history
   POST /api/sim/save|load   persistence
+  GET  /api/profile/questions   the "how you tend to react" situations
+  POST /api/profile         answers (+ optional description) -> new day 0
+  POST /api/profile/note    add a described pattern; refines day 0
+  POST /api/profile/note/delete   remove one
   GET  /api/chat/config     is a model configured, and which one
   POST /api/chat            streamed grounded answer (server-sent events)
 """
@@ -31,11 +35,13 @@ from ..anatomy.anchors import (ANCHORS, NODE_TO_CORTEX, NODE_TO_STRUCTURE,
                                anchor_table)
 from ..analyse import analyse
 from ..atlas import EDGES, EXCLUSIONS, PATHWAYS, REGIONS
+from ..engagement import engagement, logged_sources
 from ..engine import Simulation
 from ..events import CATEGORIES, EVENT_TYPES
 from ..interpret import interpret, llm_config
 from ..llm import (build_context, extract_markers, public_chat_config,
                    stream_chat, strip_markers)
+from .. import reactions
 from .app import API, ClientGone
 
 SCENE: Dict[str, Any] = {}
@@ -122,15 +128,37 @@ def _model(_: Dict[str, Any]) -> Dict[str, Any]:
 #  Live state
 # ==========================================================================
 
+def _engagement(sim: Simulation, weights: Dict[str, float],
+                day: int) -> List[Dict[str, Any]]:
+    # Without answers there is nothing about this person to compare - only
+    # the default brain plus whatever was logged - so say nothing.
+    if not sim.profile:
+        return []
+    prof = sim.profile
+    srcs = reactions.sources(prof.get("answers", {}),
+                             reactions.notes_of(prof))
+    weeks = prof.get("weeks", reactions.WEEKS)
+    # Per-week rates become totals so they weigh sensibly against log counts.
+    why = [dict(s, events={k: v * weeks for k, v in s["events"].items()})
+           for s in srcs]
+    why += logged_sources([e for e in sim.log if e.day <= day])
+    return engagement(weights, sim.warmup_days + day, sim.warmup_days, why,
+                      reactions.profile_rates(prof.get("answers", {}),
+                                              reactions.notes_of(prof)))
+
+
 def _state(sim: Simulation, weights: Dict[str, float] | None = None,
            day: int | None = None) -> Dict[str, Any]:
     """Serialise the simulation. `weights` overrides for replay."""
     w = weights if weights is not None else sim.current.snapshot()
+    d = sim.day if day is None else day
     return {
-        "day": sim.day if day is None else day,
-        "date": str(sim.date_for(sim.day if day is None else day)),
+        "day": d,
+        "date": str(sim.date_for(d)),
         "live": day is None,
         "weights": w,
+        "engagement": _engagement(sim, w, d),
+        "profile": sim.profile,
         "consolidation": {f"{c.spec.src}->{c.spec.dst}": round(c.c, 4)
                           for c in sim.current.conns},
         "targets": {f"{c.spec.src}->{c.spec.dst}": c.target
@@ -253,7 +281,8 @@ def _analyse(payload: Dict[str, Any]) -> Dict[str, Any]:
     text = str(payload.get("text", ""))
     events = [str(e) for e in (payload.get("events") or [])][:4]
     allow = bool(payload.get("allow_llm", True))
-    return {"analysis": analyse(text, events, allow_llm=allow)}
+    return {"analysis": analyse(text, events, allow_llm=allow,
+                                open_ended=bool(payload.get("open")))}
 
 
 @API.post("/api/sim/advance")
@@ -273,9 +302,13 @@ def _replay(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @API.post("/api/sim/reset")
 @guarded
-def _reset(_: Dict[str, Any]) -> Dict[str, Any]:
+def _reset(payload: Dict[str, Any]) -> Dict[str, Any]:
     global SIM
-    SIM = Simulation()
+    # Starting over clears what was logged, not who the user described -
+    # unless they ask for the answers to go too.
+    prof = None if payload.get("clear_profile") else SIM.profile
+    SIM = (reactions.build(prof.get("answers", {}), reactions.notes_of(prof))
+           if prof else Simulation())
     return _state(SIM)
 
 
@@ -309,6 +342,97 @@ def _load(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": "no such save", "path": path}
     SIM = Simulation.load(path)
     return _state(SIM)
+
+
+# --------------------------------------------------------------------------
+# How you tend to react
+# --------------------------------------------------------------------------
+
+@API.get("/api/profile/questions")
+def _profile_questions(_: Dict[str, Any]) -> Dict[str, Any]:
+    return {"questions": reactions.QUESTIONS, "weeks": reactions.WEEKS}
+
+
+def _read_pattern(text: str, allow_llm: bool) -> tuple:
+    """Classify a described pattern. Returns (note or None, read, source).
+
+    Same classifier as log entries - a language model when one is
+    reachable, keywords otherwise - and the same boundary: it only picks
+    event types; unknown ones are dropped.
+    """
+    r = interpret(text, allow_llm=allow_llm)
+    read = [{"event": p.event, "label": p.label} for p in r.proposals[:3]]
+    return reactions.note_from(text, r.proposals), read, r.source
+
+
+def _rebuild(answers: Dict[str, str], notes: List[Dict[str, Any]]) -> None:
+    """New starting point from the description, keeping everything logged."""
+    global SIM
+    SIM = reactions.build(answers, notes, log=list(SIM.log), day=SIM.day)
+
+
+@API.post("/api/profile")
+def _profile(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Set the answers (and optionally add a described pattern).
+
+    Not @guarded as a whole: the description goes through the classifier,
+    which may call a language model, and holding STATE_LOCK across that
+    would stall every other request. Only the rebuild is locked.
+    """
+    answers = payload.get("answers") or {}
+    if not isinstance(answers, dict):
+        answers = {}
+    text = str(payload.get("text", ""))[:400]
+    note, read, source = (None, [], "")
+    if text.strip():
+        note, read, source = _read_pattern(
+            text, bool(payload.get("allow_llm", True)))
+    with STATE_LOCK:
+        notes = reactions.notes_of(SIM.profile)
+        if note:
+            notes.append(note)
+        _rebuild(answers, notes)
+        return {"state": _state(SIM), "read_as": read, "source": source}
+
+
+@API.post("/api/profile/note")
+def _add_note(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Add one described pattern and refine the starting point with it."""
+    text = str(payload.get("text", "")).strip()[:400]
+    if not text:
+        return {"added": False, "reason": "Nothing to add."}
+    note, read, source = _read_pattern(
+        text, bool(payload.get("allow_llm", True)))
+    with STATE_LOCK:
+        if not note:
+            reason = ("Could not match that to anything the model knows "
+                      "about. Try describing what you do - e.g. 'I go over "
+                      "conversations for hours'.")
+            if source == "keyword":
+                reason += (" No language model is running, so only simple "
+                           "keywords were checked - start LM Studio for a "
+                           "proper reading.")
+            return {"added": False, "source": source, "reason": reason}
+        notes = reactions.notes_of(SIM.profile)
+        if len(notes) >= reactions.MAX_NOTES:
+            return {"added": False,
+                    "reason": f"Up to {reactions.MAX_NOTES} patterns; "
+                              "remove one first."}
+        notes.append(note)
+        _rebuild((SIM.profile or {}).get("answers", {}), notes)
+        return {"added": True, "state": _state(SIM), "read_as": read,
+                "source": source}
+
+
+@API.post("/api/profile/note/delete")
+@guarded
+def _delete_note(payload: Dict[str, Any]) -> Dict[str, Any]:
+    notes = reactions.notes_of(SIM.profile)
+    i = int(payload.get("index", -1))
+    if SIM.profile and 0 <= i < len(notes):
+        notes.pop(i)
+        _rebuild(SIM.profile.get("answers", {}), notes)
+    return {"state": _state(SIM)}
 
 
 # --------------------------------------------------------------------------

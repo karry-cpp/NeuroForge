@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .atlas import EDGES, PATHWAYS
 from .anatomy.anchors import NODE_TO_CORTEX, NODE_TO_STRUCTURE
+from .anatomy.structures import CORTICAL_BY_ID, STRUCTURES_BY_ID
 from .events import EVENTS_BY_ID
 
 # Engagements smaller than this are numerical noise in the rule table and
@@ -209,57 +210,159 @@ def _mod_sentence(mods: List[Dict[str, Any]]) -> str:
 # Prompting - the generated half
 # ---------------------------------------------------------------------------
 
-_SYSTEM = """You explain what a journal entry engages in a brain SIMULATION.
+_SYSTEM = """You explain, in plain language, what a brain SIMULATION says \
+is going on when someone feels or does what they describe.
 
-You are given the entry, the events it was classified as, and the pathways \
-the app's rules say those events engage. Write the explanation.
+The brief gives what they wrote and a list of brain parts, each as \
+TOKEN :: what it does. It may also give the events their words were \
+recognised as and the pathways the app's rules engage.
 
 RULES
-- Use ONLY the pathways and brain parts listed in the brief. Naming anything \
-else breaks the highlight the reader sees beside your text.
+- Name brain parts ONLY by their exact TOKEN from the brief: "vlPFC", not \
+"the ventrolateral prefrontal area". The reader clicks those tokens to find \
+each part on the brain, so any other spelling is a dead link.
+- NEVER mention a brain part that is not listed in the brief - no \
+"hypothalamus", no "frontal lobe" - even if you believe it is involved. It \
+does not exist in this simulation and highlights nothing.
+- Never attach a token to the wrong part, e.g. "the insula (ACC)".
+- For each part you name, say what it is doing and how that connects to \
+what they described. Plain language: "keeps flagging it as a threat", not \
+"upregulates salience".
+- If pathways are listed, mention only those pathways.
+- Do not quote the numbers in the brief; they are rule settings, not findings.
 - These are simulation variables, not measurements of the reader. Never write \
 that their neurons, synapses or grey matter changed.
 - Second person, calm and plain. No hype, no diagnosis, no advice.
-- 3 to 5 sentences. No headings, no bullet points, no markdown.
-- Begin by connecting what they wrote to what was recognised."""
+- Ordinary sentence capitalisation.
+- 4 to 6 sentences. No headings, no bullet points, no markdown.
+- Start directly with the explanation. Do not repeat the brief."""
+
+# Parts an open-ended (Visualise) reading may add beyond the rules: what that
+# view draws, minus cerebellum, which is not modelled. The insula is here
+# because body sensations are its job and no event rule reaches it.
+_OPEN_PARTS = ["aINS", "pINS", "acc", "sgacc", "PCC", "mPFC", "vmPFC",
+               "dlPFC", "vlPFC", "OFC", "somatosensory", "amygdala",
+               "hippocampus", "brainstem", "caudate", "putamen"]
+
+# Regexes for words a model uses for a part that are not its id, short or name.
+_ALIASES = {"aINS": (r"(?<!posterior )insula",)}
 
 
-def _brief(text: str, targets: Dict[str, Any]) -> str:
-    lines = [f'ENTRY: "{text.strip()[:400]}"', "", "RECOGNISED AS:"]
-    for e in targets["events"]:
-        lines.append(f"- {e['label']} ({e['category']}) :: {e['rule']}")
-        if e["science"]:
-            lines.append(f"  known: {e['science'][:260]}")
-    lines.append("")
-    lines.append("PATHWAYS ENGAGED (the only ones you may mention):")
-    if targets["pathways"]:
-        for p in targets["pathways"]:
-            lines.append(
-                f"- {p['label']} :: {p['direction']} by {abs(p['amount']):.2f}"
-                f" :: {p['science'][:260]}")
-    else:
-        lines.append("- none. This event changes the CONDITIONS for learning, "
-                     "not any single connection.")
-    if targets["modulators"]:
+def _part(pid: str) -> Any:
+    return CORTICAL_BY_ID.get(pid) or STRUCTURES_BY_ID.get(pid)
+
+
+def _token(pid: str) -> str:
+    """The spelling the model is asked to write: the on-screen short name
+    when it is a single clean word ("ACC", "NAcc"), otherwise the id."""
+    p = _part(pid)
+    short = getattr(p, "short", "") or ""
+    return short if re.fullmatch(r"[A-Za-z]+", short) else pid
+
+
+def _role(pid: str) -> str:
+    p = _part(pid)
+    text = (getattr(p, "contributes_to", "") or "").strip()
+    first = text.split(". ")[0].rstrip(".")
+    return first[:160] if first else ""
+
+
+def _named_parts(reply: str, candidates: List[str]) -> List[str]:
+    """Candidates the reply names, in the order it names them.
+
+    Whole-word and case-insensitive: "Amygdala" opening a sentence counts,
+    "hypothalamus" does not count as the thalamus.
+    """
+    found: List[Tuple[int, str]] = []
+    for pid in candidates:
+        p = _part(pid)
+        names = {pid, _token(pid), getattr(p, "name", "") or ""}
+        pats = [re.escape(n) for n in names if n] + list(_ALIASES.get(pid, ()))
+        best = -1
+        for pat in pats:
+            m = re.search(rf"(?<![A-Za-z]){pat}(?![A-Za-z])", reply, re.I)
+            if m and (best < 0 or m.start() < best):
+                best = m.start()
+        if best >= 0:
+            found.append((best, pid))
+    return [pid for _, pid in sorted(found)]
+
+
+def _brief(text: str, targets: Dict[str, Any],
+           extra: Optional[List[str]] = None) -> str:
+    lines = [f'ENTRY: "{text.strip()[:400]}"', ""]
+    if targets["events"]:
+        lines.append("RECOGNISED AS:")
+        for e in targets["events"]:
+            lines.append(f"- {e['label']} ({e['category']}) :: {e['rule']}")
+            if e["science"]:
+                lines.append(f"  known: {e['science'][:260]}")
         lines.append("")
-        lines.append("CONDITIONS CHANGED:")
-        for m in targets["modulators"]:
-            # Absolute settings and deltas read identically if both are
-            # printed with a sign, and a model told "sleep +0.30" reports it
-            # as an improvement when 0.30 means a bad night.
-            if m["absolute"]:
+        lines.append("PATHWAYS ENGAGED (the only ones you may mention):")
+        if targets["pathways"]:
+            for p in targets["pathways"]:
                 lines.append(
-                    f"- {m['label']} is SET TO {m['amount']:.2f} "
-                    f"on a 0-1 scale where 0 is worst and 1 is best "
-                    f"(this is a level, NOT an increase)")
-            else:
-                word = "increases" if m["amount"] > 0 else "decreases"
-                lines.append(
-                    f"- {m['label']} {word} by {abs(m['amount']):.2f}")
-    parts = targets["regions"] + targets["structures"]
-    lines.append("")
-    lines.append("BRAIN PARTS INVOLVED: " + (", ".join(parts) or "none"))
+                    f"- {p['label']} :: {p['direction']} by {abs(p['amount']):.2f}"
+                    f" :: {p['science'][:260]}")
+        else:
+            lines.append("- none. This event changes the CONDITIONS for learning, "
+                         "not any single connection.")
+        if targets["modulators"]:
+            lines.append("")
+            lines.append("CONDITIONS CHANGED:")
+            for m in targets["modulators"]:
+                if m["absolute"]:
+                    lines.append(
+                        f"- {m['label']} is SET TO {m['amount']:.2f} "
+                        f"on a 0-1 scale where 0 is worst and 1 is best "
+                        f"(this is a level, NOT an increase)")
+                else:
+                    word = "increases" if m["amount"] > 0 else "decreases"
+                    lines.append(
+                        f"- {m['label']} {word} by {abs(m['amount']):.2f}")
+        parts = targets["regions"] + targets["structures"]
+        lines.append("")
+        if parts:
+            roles = _part_roles(targets)
+            lines.append("BRAIN PARTS INVOLVED (name the main ones):")
+            for p in parts:
+                detail = "; ".join(roles.get(p, [])) or "carries this activity"
+                lines.append(f"- {_token(p)} :: {detail}")
+        else:
+            lines.append("BRAIN PARTS INVOLVED: none")
+        if extra:
+            lines.append("")
+            lines.append("OTHER PARTS YOU MAY NAME (only for something in "
+                         "the entry the parts above do not cover, such as a "
+                         "body sensation):")
+            lines += [f"- {_token(p)} :: {_role(p)}" for p in extra]
+    elif extra:
+        lines.append("No event rule matched this entry.")
+        lines.append("")
+        lines.append("BRAIN PARTS TO CHOOSE FROM (name the 2 to 4 that best "
+                     "fit what they describe):")
+        lines += [f"- {_token(p)} :: {_role(p)}" for p in extra]
+    else:
+        lines.append("BRAIN PARTS INVOLVED: none")
     return "\n".join(lines)
+
+
+def _part_roles(targets: Dict[str, Any]) -> Dict[str, List[str]]:
+    """What each part is actually doing, taken from the edges in play."""
+    roles: Dict[str, List[str]] = {}
+    live = {p["id"] for p in targets["pathways"]}
+    for e in EDGES:
+        if e.pathway not in live:
+            continue
+        for node, other, arrow in ((e.src, e.dst, "to"), (e.dst, e.src, "from")):
+            part = NODE_TO_STRUCTURE.get(node) or NODE_TO_CORTEX.get(node)
+            if not part:
+                continue
+            line = f"{arrow} {other}: {e.label}"
+            got = roles.setdefault(part, [])
+            if line not in got and len(got) < 3:
+                got.append(line)
+    return roles
 
 
 def _clean(reply: str) -> str:
@@ -283,11 +386,39 @@ def _acceptable(reply: str) -> bool:
     return len(reply) >= 40
 
 
+def _sentence_case(text: str, protect: List[str]) -> str:
+    """qwen3-4b writes in lower case whatever the prompt says, so fix it here.
+
+    Part names are left alone: capitalising a sentence that opens with
+    "vlPFC" would produce "VlPFC", which no longer matches the token the
+    panel turns into a link.
+    """
+    keep = {p.lower() for p in protect}
+
+    def up(m: "re.Match[str]") -> str:
+        lead, word = m.group(1), m.group(2)
+        if word.lower() in keep:
+            return lead + word
+        return lead + word[:1].upper() + word[1:]
+
+    return re.sub(r"(^|[.!?]\s+)([A-Za-z]+)", up, text)
+
+
 def analyse(text: str, event_ids: List[str],
             allow_llm: bool = True,
-            timeout: float = 0.0) -> Dict[str, Any]:
+            timeout: float = 0.0,
+            open_ended: bool = False) -> Dict[str, Any]:
     """Explain an entry. Anatomy from the rules, prose from a model if one is
-    connected and its answer is usable."""
+    connected and its answer is usable.
+
+    `open_ended` is the Visualise tab: with no events given, the text is
+    classified here, and the model may add parts from `_OPEN_PARTS` for what
+    the rules do not reach. Rule-derived parts are always kept.
+    """
+    if open_ended and not event_ids:
+        from .interpret import interpret
+        event_ids = [p.event for p in
+                     interpret(text, allow_llm=allow_llm).proposals[:2]]
     targets = targets_for(event_ids)
     fallback = _from_rules(targets)
     out: Dict[str, Any] = dict(targets)
@@ -295,11 +426,16 @@ def analyse(text: str, event_ids: List[str],
     out["source"] = "rules"
     out["model"] = ""
 
-    if not allow_llm or not targets["events"]:
+    if not allow_llm:
+        return out
+
+    ruled = targets["regions"] + targets["structures"]
+    extra = [p for p in _OPEN_PARTS if p not in ruled] if open_ended else []
+    if not targets["events"] and not extra:
         return out
 
     try:
-        reply, model = _generate(text, targets, timeout)
+        reply, model = _generate(text, targets, timeout, extra)
     except _NoModel:
         # Nothing configured is the documented default, not a failure. Saying
         # "unreachable" here would make a working app look broken.
@@ -313,14 +449,20 @@ def analyse(text: str, event_ids: List[str],
         out["note"] = "model returned no usable text"
         return out
 
-    out["text"] = reply
+    added = _named_parts(reply, extra)
+    out["regions"] = targets["regions"] + [p for p in added
+                                          if p in CORTICAL_BY_ID]
+    out["structures"] = targets["structures"] + [p for p in added
+                                                if p not in CORTICAL_BY_ID]
+    named = ruled + added
+    out["text"] = _sentence_case(reply, named + [_token(p) for p in named])
     out["source"] = "model"
     out["model"] = model
     return out
 
 
-def _generate(text: str, targets: Dict[str, Any],
-              timeout: float) -> Tuple[str, str]:
+def _generate(text: str, targets: Dict[str, Any], timeout: float,
+              extra: Optional[List[str]] = None) -> Tuple[str, str]:
     import os
 
     from .interpret import _post_json, llm_config
@@ -337,7 +479,7 @@ def _generate(text: str, targets: Dict[str, Any],
     local = any(h in base for h in
                 ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
 
-    prompt = _brief(text, targets)
+    prompt = _brief(text, targets, extra)
     # Reasoning models otherwise spend the whole budget thinking and return
     # empty content. Qwen3 reads this marker in the prompt itself, which is
     # the only lever that works when a server ignores enable_thinking.
@@ -349,7 +491,7 @@ def _generate(text: str, targets: Dict[str, Any],
         "messages": [{"role": "system", "content": _SYSTEM},
                      {"role": "user", "content": prompt}],
         "temperature": 0.3,
-        "max_tokens": 500,
+        "max_tokens": 2000,
         "stream": False,
     }
     if local:
