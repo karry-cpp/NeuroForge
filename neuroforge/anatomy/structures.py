@@ -519,7 +519,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
                "replicate.",
     ),
     CorticalRegion(
-        "vlPFC", 2, "Ventrolateral prefrontal cortex", "vlPFC", "#8b5cf6",
+        "vlPFC", 2, "Ventrolateral prefrontal cortex", "vlPFC", "#8468c0",
         what_it_is="The lower outer frontal surface, including the "
                    "inferior frontal gyrus (roughly BA 44/45/47).",
         where_it_is="Front of the brain, lower and to the side - roughly "

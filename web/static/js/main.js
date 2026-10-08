@@ -38,8 +38,10 @@ const FOCUS_OFF = 0.10;
  * is built around. "Full" restores every row.
  * ---------------------------------------------------------------------- */
 const FOCUS = {
-  cortex: ['mPFC', 'vmPFC', 'dlPFC', 'dACC', 'sgACC', 'PCC', 'aINS'],
-  structures: ['amygdala', 'hippocampus', 'acc', 'sgacc', 'brainstem'],
+  cortex: ['mPFC', 'vmPFC', 'OFC', 'dlPFC', 'vlPFC', 'dACC', 'sgACC', 'PCC',
+           'aINS'],
+  structures: ['amygdala', 'hippocampus', 'acc', 'sgacc', 'caudate', 'putamen',
+               'accumbens', 'thalamus', 'vta', 'brainstem'],
   groups: ['PFC', 'latPFC'],
 };
 
@@ -55,16 +57,18 @@ const inFocus = (kind, id) => App.focus === 'all' || FOCUS[kind].includes(id);
  * Cerebellum earns its place by anchoring the bottom of the specimen - without
  * it the brain reads as floating.
  *
- * The cortical half of the same shortlist is FOCUS.cortex: mPFC, vmPFC, dlPFC,
- * dACC, sgACC, PCC, aINS. Parcels are part of the cortex mesh, so they need no
+ * The cortical half of the same shortlist is FOCUS.cortex: mPFC, vmPFC, OFC,
+ * dlPFC, vlPFC, dACC, sgACC, PCC, aINS. Parcels are part of the cortex mesh, so they need no
  * cast - they simply appear when selected. */
 const VIS_CAST = ['amygdala', 'hippocampus', 'acc', 'sgacc',
                   'caudate', 'putamen',
                   'brainstem', 'cerebellum'];
 const VIS_MAX_PARTS = 3;
-// Structure glow in Visualise. Selected meshes already pulse, and 0.4 on top
-// of that bloomed past the tissue.
-const VIS_GLOW = 0.1, VIS_GLOW_FOCUS = 0.4;
+// Visualise glow by involvement level 0..1: the busiest part glows most,
+// golden white. Focus lifts one part to the top.
+const VIS_GLOW_MIN = 0.12, VIS_GLOW_SPAN = 0.5, VIS_GLOW_FOCUS = 0.75;
+const visGlow = (id, focus) => id === focus ? VIS_GLOW_FOCUS
+  : VIS_GLOW_MIN + VIS_GLOW_SPAN * (App.visLevels[id] ?? 0.25);
 
 const App = {
   scene: null, model: null, state: null,
@@ -72,8 +76,9 @@ const App = {
   playing: false, playT: 0,
   focus: 'regulation',
   visSeq: 0,
-  visParts: [], visFocus: null,
-  curFocus: null, curDraft: '',
+  visParts: [], visFocus: null, visLevels: {},
+  curFocus: null, curNote: null, disputePart: null, intent: 'usual',
+  viewer2: null, camLead: 1,
   eventById: {}, nodeById: {}, cortexById: {}, cortexByIndex: {},
   structById: {},
 };
@@ -159,6 +164,7 @@ async function boot() {
     App.chat = new Chat({
       onShow: (ids) => chatHighlight(ids),
       onLog: (id, intensity, note) => doLog(id, intensity, note),
+      onClose: () => chatUnlabel(),
     });
     await App.chat.init();
 
@@ -199,7 +205,10 @@ function wire() {
   V.onPick((hit) => {
     // Current's engagement view is a reading, not a selection: clicks inspect.
     if (currentLocked()) {
-      if (!hit) { if (App.curFocus) focusCurrentPart(null); return; }
+      if (!hit) {
+        if (App.curFocus || App.curNote != null) focusCurrentPart(null);
+        return;
+      }
       if (hit.kind === 'edge') return;
       const id = hit.kind === 'structure'
         ? hit.id : App.cortexByIndex[hit.id]?.id;
@@ -208,15 +217,16 @@ function wire() {
       else showCortex(hit.id, true, hit.fine, hit.network);
       return;
     }
-    // Visualise highlights stay until Reset: a click only inspects.
+    // Visualise highlights stay until Reset. A click focuses a lit part; the
+    // panel stays shut, since the explanation already says what each part does.
     if (visualiseLocked()) {
       if (!hit) { focusVisualisePart(null); return; }
       if (hit.kind === 'edge') return;
       const id = hit.kind === 'structure'
         ? hit.id : App.cortexByIndex[hit.id]?.id;
-      if (App.visParts.includes(id)) focusVisualisePart(id);
-      if (hit.kind === 'structure') showStructure(hit.id, true);
-      else showCortex(hit.id, true, hit.fine, hit.network);
+      if (App.visParts.includes(id)) {
+        focusVisualisePart(App.visFocus === id ? null : id);
+      }
       return;
     }
     if (!hit) { clearSelection(); Panel.close(); return; }
@@ -291,7 +301,7 @@ function wire() {
   /* ---- state toggle ---- */
   $$('#stateSeg button').forEach(b => b.onclick = () => selectState(b.dataset.state));
 
-  wireVisualiser();
+  wireComposer();
 
   /* ---- actions ---- */
   $('#btnTrigger').onclick  = openTrigger;
@@ -571,8 +581,12 @@ function buildStructureList() {
   const items = App.scene.structures
     .filter(s => inFocus('structures', s.id))
     .slice().sort((a, b) => a.order - b.order);
+  const sys = [...new Set(items.map(s => s.system))];
+  items.sort((a, b) => sys.indexOf(a.system) - sys.indexOf(b.system));
   host.innerHTML = '<div class="docktitle">STRUCTURES</div>' +
-    items.map(s => `
+    items.map((s, i) => `
+      ${s.system !== items[i - 1]?.system
+        ? `<div class="docksub">${s.system}</div>` : ''}
       <div class="structrow" data-id="${s.id}">
         <span class="sw" style="background:${s.color};color:${s.color}"></span>
         <span class="nm">${s.short}</span>
@@ -625,23 +639,25 @@ function setMode(mode) {
   const sim = mode === 'simulation';
   const circ = mode !== 'anatomy';
 
+  endPaths();
   App.circuits.setVisible(circ);
   $('#statebar').classList.toggle('hidden', !sim);
   $('#btnTimeline').classList.toggle('hidden', !sim);
-  $('#timeline').classList.toggle('hidden',
-    !sim || App.viewState === 'current' || App.viewState === 'visualise');
+  // Every Simulation tab is about the brain; the timeline starts hidden and
+  // the Timeline button brings it up.
+  $('#timeline').classList.add('hidden');
   $('#metricWrap').style.opacity = sim ? '1' : '.32';
 
-  // The Visualise panel and its cast belong to one state of one mode; it no
-  // longer sits inside #statebar, so it does not get hidden with it.
+  // The side panel and the Compare split belong to one mode; they no longer
+  // sit inside #statebar, so they do not get hidden with it.
   if (!sim) {
-    $('#visPanel').classList.add('hidden');
-    $('#curPanel').classList.add('hidden');
+    $('#simPanel').classList.add('hidden');
+    setSplit(false);
     App.viewer.setStructureCast(null);
     App.viewer.setGlassMode(false);
-    App.viewer.setTrueColor(false);
     App.viewer.setPinFilter(null);
     App.viewer.setPinBadges(null);
+    App.viewer.setStrongGlow(false);
   }
 
   if (mode === 'anatomy') {
@@ -673,63 +689,81 @@ function setViewState(s) {
   App.viewState = s;
   const hint = $('#stateHint');
   const vis = s === 'visualise';
-  const cur = s === 'current';
+  const reading = READING.has(s);
 
-  $('#visPanel').classList.toggle('hidden', !vis);
-  $('#curPanel').classList.toggle('hidden', !cur);
-  // Twenty lit tubes run through the middle of the brain. Against them a
-  // glowing region reads as background, which defeats the point of both
-  // Visualise and Current - they are about parts, not connections.
-  App.circuits.setVisible(!vis && !cur && App.mode !== 'anatomy');
+  $('#simPanel').classList.remove('hidden');
+  // Compare has nothing obvious to add, so it has no box.
+  $('#composer').classList.toggle('hidden', s === 'compare');
+  $('#visBody').classList.toggle('hidden', !vis);
+  $('#visReset').classList.toggle('hidden', !vis);
+  App.viewer.setStrongGlow(vis);
+  $('#curPanel').classList.toggle('hidden', vis);
+  if (prev !== s && DEFAULT_INTENT[s]) setIntent(DEFAULT_INTENT[s]);
+  // Tubes are the Circuits mode's subject. Here the subject is parts, and
+  // twenty lit tubes through the middle of the brain drown them out.
+  App.circuits.setVisible(false);
+  if (prev !== s) endPaths();
   App.viewer.setStructureCast(vis ? VIS_CAST : null);
-  // Until the text names something, nothing is the subject: the structures
-  // should be as see-through as the cortex, not floating solid in front of it.
-  App.viewer.setGlassMode(vis || cur);
-  // Current names parts by their sidebar colour, so show that colour.
-  App.viewer.setTrueColor(cur);
+  // Until something is named, nothing is the subject: the structures should
+  // be as see-through as the cortex, not floating solid in front of it.
+  App.viewer.setGlassMode(true);
   App.viewer.setPinFilter(vis ? App.visParts : null);
-  if (!cur) App.viewer.setPinBadges(null);
+  if (!reading) App.viewer.setPinBadges(null);
+  setSplit(s === 'compare');
   // applyState() re-enters here; put the highlight back rather than lose it.
   if (vis && App.visParts.length) applyVisualise(App.visFocus);
   // The timeline is a wide bar across the lower half; it sits on top of the
-  // brain and the panel. Current can still open it from the Timeline button.
-  if ((vis || cur) && prev !== s) $('#timeline').classList.add('hidden');
+  // brain and the panel. It can still be opened from the Timeline button.
+  if (prev !== s) $('#timeline').classList.add('hidden');
   $('#btnTimeline').classList.toggle('hidden', vis);
 
-  if (prev === 'visualise' && !vis) {
-    $('#visText').value = '';
-    clearVisualise();
-  }
-  if (prev === 'current' && !cur) {
+  if (prev === 'visualise' && !vis) clearVisualise();
+  if (READING.has(prev) && prev !== s) {
     App.curFocus = null;
+    App.curNote = null;
     clearSelection();
     App.viewer.clearGlow();
   }
 
-  if (vis) {
-    hint.textContent =
-      'what the rules associate with your words \u00b7 nothing is recorded';
-    $('#visText').focus();
-    return;
-  }
+  hint.textContent = {
+    visualise: 'what the rules associate with your words \u00b7 nothing is '
+      + 'recorded',
+    current: 'more / less engaged than a typical starting point \u00b7 a '
+      + 'model, not a measurement',
+    target: 'how the brain you are aiming for would be engaged \u00b7 a '
+      + 'model, not a measurement',
+    compare: 'where you are, beside where you are aiming \u00b7 turn either '
+      + 'brain and both follow',
+  }[s] || '';
+  if (reading) renderReading();
+}
 
-  if (cur) {
-    hint.textContent =
-      'more / less engaged than a typical starting point \u00b7 a model, '
-      + 'not a measurement';
-    renderCurrent();
-    return;
+/** Compare puts a second, camera-linked brain beside the first. */
+function setSplit(on) {
+  const was = document.body.classList.contains('split');
+  if (on === was) return;
+  document.body.classList.toggle('split', on);
+  if (on && !App.viewer2) {
+    const V2 = new Viewer($('#gl2'), { pinLayer: $('#pinLayer2') });
+    V2.loadScene(App.scene);
+    V2.setMode('simulation');
+    V2.setGlassMode(true);
+    V2.setTrueColor(true);
+    // Either brain can be turned; the one last touched leads.
+    App.viewer.controls.addEventListener('start', () => { App.camLead = 1; });
+    V2.controls.addEventListener('start', () => { App.camLead = 2; });
+    App.viewer2 = V2;
   }
+  App.camLead = 1;
+  App.viewer.resize();
+  App.viewer2?.resize();
+}
 
-  if (s === 'target') {
-    App.circuits.update(App.state.targets);
-    App.circuits.setGhost(false);
-    hint.textContent = 'the behavioural direction you have chosen to practise';
-  } else {
-    App.circuits.update(App.state.weights, App.state.targets);
-    App.circuits.setGhost(true);
-    hint.textContent = 'solid = current · dashed = target';
-  }
+function syncCameras() {
+  const [a, b] = App.camLead === 2
+    ? [App.viewer2, App.viewer] : [App.viewer, App.viewer2];
+  b.camera.position.copy(a.camera.position);
+  b.controls.target.copy(a.controls.target);
 }
 
 /* ======================================================================= */
@@ -848,11 +882,19 @@ function chatHighlight(ids) {
 
   const labels = [];
   const structs = [];
+  const named = [];
   for (const id of ids) {
     if (App.cortexById[id]) labels.push(App.cortexById[id].label_index);
     else if (App.structById[id]) structs.push(id);
+    else continue;
+    named.push(id);
   }
   if (!labels.length && !structs.length) return;
+
+  if (!('chatPrevPins' in App)) {
+    App.chatPrevPins = V._pinFilter ? [...V._pinFilter] : null;
+  }
+  V.setPinFilter(named);
 
   // selectMany() already handles buried cortex: it flips to x-ray when a
   // hidden region is selected and restores the previous mode afterwards.
@@ -861,6 +903,12 @@ function chatHighlight(ids) {
   V.clearGlow();
   for (const s of structs) V.setStructureGlow(s, 0.8);
   for (const l of labels) V.setRegionGlow(l, 0.8);
+}
+
+function chatUnlabel() {
+  if (!('chatPrevPins' in App)) return;
+  App.viewer?.setPinFilter(App.chatPrevPins);
+  delete App.chatPrevPins;
 }
 
 /* ------------------------------------------------------------- compare */
@@ -1206,34 +1254,98 @@ function lightFor(eventIds) {
 }
 
 /* ======================================================================= */
-/*  VISUALISE                                                               */
+/*  COMPOSER                                                                */
 /* ======================================================================= */
 
-/**
- * Read a description and light what the rules associate with it. Nothing is
- * logged: this is a look-up, not an entry, and it is the one place in the app
- * where text reaches the brain without a confirmation step precisely because
- * it changes nothing.
- */
-function wireVisualiser() {
-  const box = $('#visText'), go = $('#visGo'), reset = $('#visReset');
-  if (!box || !go) return;
+/* One box for everything typed in Simulation. It used to be three - the
+ * Visualise box, Current's patterns box and the log dock's free text - all
+ * running the same classifier with different consequences. What it does now
+ * follows the tab, and the label above it says so. */
+const INTENTS = {
+  usual: { label: 'HOW YOU USUALLY REACT', go: 'Add',
+           ph: 'e.g. I bottle things up at work and snap at home' },
+  goal:  { label: 'WHO YOU WANT TO BE', go: 'Add',
+           ph: 'e.g. I want to pause before I answer when I am criticised' },
+  show:  { label: 'WHAT IS HAPPENING RIGHT NOW', go: 'Explain',
+           ph: 'e.g. my chest is tight and I keep replaying the argument' },
+};
+const DEFAULT_INTENT = { current: 'usual', target: 'goal', visualise: 'show' };
 
-  go.onclick = () => {
+function setIntent(k) {
+  App.intent = k;
+  $('#composerLabel').textContent = INTENTS[k].label;
+  $('#composerText').placeholder = INTENTS[k].ph;
+  $('#composerGo').textContent = INTENTS[k].go;
+  $('#composerMsg').textContent = '';
+}
+
+/** Fit a textarea to its text, up to a cap; past that it scrolls. */
+function growBox(el) {
+  el.style.height = 'auto';
+  const cap = Math.round(window.innerHeight * 0.4);
+  el.style.height = Math.min(el.scrollHeight + 2, cap) + 'px';
+  el.style.overflowY = el.scrollHeight + 2 > cap ? 'auto' : 'hidden';
+  const n = el.value.length, max = Number(el.maxLength);
+  const count = el.parentElement?.querySelector('.box-count');
+  if (count) count.textContent = max > 0 && n > max * 0.8 ? `${n} / ${max}` : '';
+}
+
+function wireComposer() {
+  const box = $('#composerText'), go = $('#composerGo'), msg = $('#composerMsg');
+  setIntent('usual');
+  // Any textarea marked data-grow, including ones rendered later.
+  document.addEventListener('input', (e) => {
+    if (e.target.matches?.('textarea[data-grow]')) growBox(e.target);
+  });
+
+  go.onclick = async () => {
     const text = box.value.trim();
     if (text.length < 4) { box.focus(); return; }
-    runVisualise(text);
-  };
+    const k = App.intent;
+    msg.textContent = '';
 
-  reset.onclick = () => { box.value = ''; clearVisualise(); box.focus(); };
-  reset.disabled = true;
-  box.addEventListener('input', () => { reset.disabled = !box.value.trim(); });
+    if (k === 'show') { runVisualise(text); return; }
+
+    go.disabled = box.disabled = true;
+    go.textContent = 'Reading\u2026';
+    let r;
+    try {
+      r = await (k === 'goal' ? API.addGoal(text) : API.addNote(text));
+    } catch (err) {
+      r = { added: false, reason: err.message };
+    }
+    go.disabled = box.disabled = false;
+    go.textContent = INTENTS[k].go;
+    if (!r.added) { msg.textContent = r.reason || 'Could not add that.'; return; }
+    box.value = '';
+    growBox(box);
+    App.curFocus = null;
+    // Bring forward what the new note touches, so cause and effect meet.
+    App.curNote = (k === 'goal' ? r.state.goal_effects
+                                : r.state.note_effects)?.length - 1;
+    if (!(App.curNote >= 0)) App.curNote = null;
+    const before = App.state?.engagement;
+    applyState(r.state);
+    if (App.curNote != null) focusNote(App.curNote);
+    if (k === 'usual') {
+      playEngagementChange(before, Object.keys(
+        r.state.profile?.notes?.at(-1)?.events || {}));
+    }
+    const read = (r.read_as || []).map(p => p.label.toLowerCase()).join(', ');
+    const by = (r.source || '').startsWith('llm:')
+      ? `read by ${r.source.slice(4)}` : 'matched by keyword';
+    $('#composerMsg').textContent = `Added - ${by} as: ${read}.`;
+  };
 
   box.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go.click(); }
-    else if (e.key === 'Escape') { reset.click(); }
   });
+  $('#visReset').onclick = () => { clearVisualise(); box.focus(); };
 }
+
+/* ======================================================================= */
+/*  VISUALISE                                                               */
+/* ======================================================================= */
 
 /** Move the segmented control and the view together. */
 function selectState(s) {
@@ -1248,7 +1360,6 @@ function clearVisualise() {
   App.visFocus = null;
   $('#visRead').textContent = '';
   $('#visOut').innerHTML = '';
-  $('#visReset').disabled = !$('#visText').value.trim();
   clearSelection();
   App.viewer.clearGlow();
   const vis = App.viewState === 'visualise';
@@ -1262,40 +1373,206 @@ function visualiseLocked() {
 }
 
 /* ======================================================================= */
-/*  CURRENT                                                                 */
+/*  CURRENT / TARGET / COMPARE                                              */
 /* ======================================================================= */
 
-const engagedRows = () => (App.state?.engagement || [])
-  .filter(r => r.level !== 'typical'
-            && (App.structById[r.part] || App.cortexById[r.part]));
+// Tabs that read out engagement rather than drawing connections.
+const READING = new Set(['current', 'target', 'compare']);
+
+const onBrain = (rows) => (rows || [])
+  .filter(r => App.structById[r.part] || App.cortexById[r.part]);
+
+function readingRows() {
+  return onBrain(App.viewState === 'target'
+    ? App.state?.target_engagement : App.state?.engagement);
+}
+
+const engagedRows = () => readingRows().filter(r => r.level !== 'typical');
 
 function currentLocked() {
-  return App.mode === 'simulation' && App.viewState === 'current'
-      && engagedRows().length > 0;
+  return App.mode === 'simulation' && READING.has(App.viewState)
+      && (engagedRows().length > 0
+          || onBrain(App.state?.target_engagement).some(r => r.level !== 'typical'));
+}
+
+function renderReading() {
+  stopEngAnim();
+  const s = App.viewState;
+  if (s === 'compare') { renderCompare(); return; }
+  const target = s === 'target';
+  const rows = readingRows();
+  paintEngagement(App.viewer, rows, focusIds());
+  $('#curPanel').innerHTML = target
+    ? targetPanelHtml(rows) : currentPanelHtml(rows, !!App.state?.profile);
+  wireReadingPanel();
+  showPartPaths();
+}
+
+/** A focused part, or every part the focused note pushes. */
+function focusIds() {
+  if (App.curFocus) return [App.curFocus];
+  return App.curNote == null ? [] : noteTags(App.curNote).map(e => e.part);
+}
+
+/** The rows that name this note as a reason, so the note and the rows say
+ *  the same thing; failing that, the parts its events push hardest. */
+function noteTags(i) {
+  const cited = readingRows().filter(r => r.level !== 'typical'
+    && (r.why?.refs || []).includes(`note:${i}`));
+  if (cited.length) return cited.map(r => ({ part: r.part, dir: r.level }));
+  const fx = (App.viewState === 'target' ? App.state?.goal_effects
+                                         : App.state?.note_effects) || [];
+  return (fx[i] || []).filter(e => partOf(e.part));
+}
+
+function renderCompare() {
+  const cur = onBrain(App.state?.engagement);
+  const tgt = onBrain(App.state?.target_engagement);
+  const f = App.curFocus ? [App.curFocus] : [];
+  paintEngagement(App.viewer, cur, f);
+  if (App.viewer2) paintEngagement(App.viewer2, tgt, f);
+  $('#curPanel').innerHTML = comparePanelHtml(cur, tgt);
+  wireReadingPanel();
+  showPartPaths();
+}
+
+/** Click and Enter/Space for a non-button that holds buttons of its own. */
+function pressable(el, fn, skip = 'button') {
+  el.onclick = (e) => { if (!e.target.closest(skip)) fn(); };
+  el.onkeydown = (e) => {
+    if (e.target === el && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      fn();
+    }
+  };
+}
+
+function focusNote(i) {
+  App.curFocus = null;
+  App.curNote = i;
+  renderReading();
+  const el = $('#curPanel .cur-note.on');
+  if (!el) return;
+  el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+}
+
+function wireReadingPanel() {
+  $$('#curPanel .eng-row, #curPanel .cmp-row[data-part]').forEach(b => {
+    b.classList.toggle('on', b.dataset.part === App.curFocus);
+    pressable(b, () => focusCurrentPart(
+      App.curFocus === b.dataset.part ? null : b.dataset.part),
+      'button, a, textarea, .eng-levers, .eng-dispute');
+  });
+  $$('#curPanel [data-dispute]').forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    App.disputePart = App.curFocus;
+    renderReading();
+    $('#disputeText')?.focus();
+  });
+  const dClose = $('#curPanel [data-dispute-close]');
+  if (dClose) dClose.onclick = () => { App.disputePart = null; renderReading(); };
+  const dAdd = $('#curPanel [data-dispute-add]');
+  if (dAdd) dAdd.onclick = async () => {
+    const text = $('#disputeText').value.trim();
+    if (text.length < 4) { $('#disputeText').focus(); return; }
+    dAdd.disabled = true;
+    dAdd.textContent = 'Reading\u2026';
+    let r;
+    try { r = await API.addNote(text); }
+    catch (err) { r = { added: false, reason: err.message }; }
+    if (!r.added) {
+      dAdd.disabled = false;
+      dAdd.textContent = 'Add';
+      $('#disputeMsg').textContent = r.reason || 'Could not add that.';
+      return;
+    }
+    App.disputePart = null;
+    const before = App.state?.engagement;
+    applyState(r.state);
+    focusNote(r.state.profile.notes.length - 1);
+    playEngagementChange(before, Object.keys(
+      r.state.profile.notes.at(-1)?.events || {}));
+  };
+  $$('#curPanel [data-edit]').forEach(b => b.onclick = (e) => {
+    e.preventDefault();
+    openReread('current', Number(b.dataset.edit));
+  });
+  $$('#curPanel [data-edit-goal]').forEach(b => b.onclick = (e) => {
+    e.preventDefault();
+    openReread('target', Number(b.dataset.editGoal));
+  });
+  $$('#curPanel .cur-note[data-note]').forEach(n => {
+    const i = Number(n.dataset.note);
+    pressable(n, () => focusNote(App.curNote === i ? null : i));
+  });
+  $$('#curPanel [data-ref]').forEach(b => b.onclick = (e) => {
+    e.preventDefault();
+    const [kind, val] = b.dataset.ref.split(':');
+    if (kind === 'note') focusNote(Number(val));
+    else if (kind === 'answer') {
+      openQuiz(App.viewState === 'target' ? 'target' : 'current',
+               val.split('/')[0]);
+    }
+  });
+  $$('#curPanel [data-log]').forEach(b =>
+    b.onclick = () => doLog(b.dataset.log));
+  $$('#curPanel [data-quiz]').forEach(b =>
+    b.onclick = () => openQuiz(b.dataset.quiz || 'current'));
+  const night = $('#curPanel [data-night-close]');
+  if (night) night.onclick = () => {
+    App.overnightSeen = App.state.day;
+    renderReading();
+  };
+  const clear = $('#curPanel [data-clear]');
+  if (clear) clear.onclick = async () => {
+    if (!confirm('Clear your description and everything logged since?')) return;
+    App.curFocus = null;
+    App.curNote = null;
+    applyState(await API.reset(true));
+  };
+  const clearT = $('#curPanel [data-clear-target]');
+  if (clearT) clearT.onclick = async () => {
+    if (!confirm('Clear your target? Progress goes back to the app\'s '
+                 + 'default aims.')) return;
+    App.curFocus = null;
+    App.curNote = null;
+    applyState((await API.clearTarget()).state);
+  };
+  $$('#curPanel [data-del]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault();
+    App.curNote = null;
+    App.disputePart = null;
+    applyState((await API.deleteNote(Number(b.dataset.del))).state);
+  });
+  $$('#curPanel [data-del-goal]').forEach(b => b.onclick = async () => {
+    App.curNote = null;
+    applyState((await API.deleteGoal(Number(b.dataset.delGoal))).state);
+  });
 }
 
 /**
- * Show which parts the model has more or less engaged than typical.
+ * Show which parts a brain has more or less engaged than typical.
  *
  * Part colours stay the part's own, so the brain reads the same as in every
- * other view. More engaged parts carry a glow in their own colour, less
- * engaged ones stay visible but faint, typical ones drop to glass, and the
- * arrows on the labels say which is which. Clicking a part brings it forward
- * and fades everything else, without moving the camera.
+ * other view. More engaged parts come forward, less engaged ones stay
+ * visible but faint, typical ones drop to glass, and the arrows on the
+ * labels say which is which. No steady glow: here glow means "just changed"
+ * (playEngagementChange), and in Visualise "active right now". Clicking a
+ * part (or a note) brings it forward without moving the camera.
  */
-function renderCurrent() {
-  const V = App.viewer;
-  const rows = (App.state?.engagement || [])
-    .filter(r => App.structById[r.part] || App.cortexById[r.part]);
+function paintEngagement(V, rows, focusIds = []) {
   const lit = rows.filter(r => r.level !== 'typical');
-  if (!lit.some(r => r.part === App.curFocus)) App.curFocus = null;
-  const focus = App.curFocus;
+  const focus = new Set(focusIds.filter(id => lit.some(r => r.part === id)));
+  const isForward = (r) => focus.size ? focus.has(r.part) : r.level === 'more';
 
   const labels = [], structs = [], badges = {};
   const up = { labels: [], structs: [] };
   for (const r of lit) {
     badges[r.part] = r.level === 'more' ? '\u25b2' : '\u25bc';
-    const forward = focus ? r.part === focus : r.level === 'more';
+    const forward = isForward(r);
     if (App.structById[r.part]) {
       structs.push(r.part);
       if (forward) up.structs.push(r.part);
@@ -1310,138 +1587,448 @@ function renderCurrent() {
   if (lit.length) {
     V.selectMany(labels, structs, null);
     V.setEmphasis(up.labels, up.structs, true);
-    for (const r of lit) {
-      if (focus ? r.part !== focus : r.level !== 'more') continue;
-      const g = Math.min(0.4, 0.1 + Math.abs(r.score));
-      if (App.structById[r.part]) V.setStructureGlow(r.part, g);
-      else V.setRegionGlow(App.cortexById[r.part].label_index, g + 0.2);
-    }
   } else {
     V.selectMany([], []);
   }
   V.setPinFilter(lit.map(r => r.part));
   V.setPinBadges(badges);
-
-  $('#curPanel').innerHTML = currentPanelHtml(rows, !!App.state?.profile);
-  $$('#curPanel .eng-row').forEach(b => {
-    b.classList.toggle('on', b.dataset.part === focus);
-    b.onclick = () => focusCurrentPart(
-      App.curFocus === b.dataset.part ? null : b.dataset.part);
-  });
-  $$('#curPanel [data-quiz]').forEach(b => b.onclick = openQuiz);
-  const clear = $('#curPanel [data-clear]');
-  if (clear) clear.onclick = async () => {
-    if (!confirm('Clear your answers and everything logged since?')) return;
-    App.curFocus = null;
-    App.curDraft = '';
-    applyState(await API.reset(true));
-  };
-  wirePatterns();
 }
 
-/** The "add a pattern" box. The panel re-renders on every state change, so
- *  the draft lives on App rather than in the textarea. */
-function wirePatterns() {
-  const box = $('#curNote'), add = $('#curNoteAdd'), msg = $('#curNoteMsg');
-  if (!box) return;
-  box.value = App.curDraft || '';
-  box.oninput = () => { App.curDraft = box.value; };
-  box.onkeydown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); add.click(); }
-  };
-  add.onclick = async () => {
-    const text = box.value.trim();
-    if (text.length < 4) { box.focus(); return; }
-    add.disabled = box.disabled = true;
-    add.textContent = 'Reading\u2026';
-    msg.textContent = '';
-    let r;
-    try { r = await API.addNote(text); }
-    catch (err) { r = { added: false, reason: err.message }; }
-    if (!r.added) {
-      add.disabled = box.disabled = false;
-      add.textContent = 'Add';
-      msg.textContent = r.reason || 'Could not add that.';
-      return;
-    }
-    App.curDraft = '';
-    App.curFocus = null;
-    applyState(r.state);
-    const read = (r.read_as || []).map(p => p.label.toLowerCase()).join(', ');
-    const by = (r.source || '').startsWith('llm:')
-      ? `read by ${r.source.slice(4)}` : 'matched by keyword';
-    const out = $('#curNoteMsg');
-    if (out) out.textContent = `Added - ${by} as: ${read}.`;
-  };
-  $$('#curPanel [data-del]').forEach(b => b.onclick = async () => {
-    applyState((await API.deleteNote(Number(b.dataset.del))).state);
+// Glow by order of change, not size: scores move ~0.05, which reads as
+// the same brightness everywhere if mapped directly.
+const ENG_PEAK = [0.55, 0.45, 0.38, 0.32];
+const ENG_STEP_MS = 150;
+
+function stopEngAnim() {
+  const a = App.engAnim;
+  if (!a) return;
+  a.timers.forEach(clearTimeout);
+  cancelAnimationFrame(a.raf);
+  App.engAnim = null;
+  App.viewer.clearGlow();
+}
+
+/**
+ * What a new reaction changed, played once: the route its events take,
+ * then each moved part switching from its old reading to its new one,
+ * biggest change first, with a brief glow on parts that went up. Settles
+ * on the ordinary reading; nothing keeps pulsing.
+ */
+function playEngagementChange(beforeRows, eventIds) {
+  stopEngAnim();
+  if (App.mode !== 'simulation' || App.viewState !== 'current') return;
+  const V = App.viewer;
+  const after = readingRows();
+  const old = Object.fromEntries(onBrain(beforeRows).map(r => [r.part, r]));
+  const moved = after
+    .map(r => ({ r, d: r.score - (old[r.part]?.score || 0),
+                 was: old[r.part]?.level || 'typical' }))
+    .filter(x => x.r.level !== x.was || Math.abs(x.d) >= TREND_STEADY)
+    .sort((a, b) => Math.abs(b.d) - Math.abs(a.d))
+    .slice(0, ENG_PEAK.length);
+  if (!moved.length) return;
+
+  const anim = App.engAnim = { timers: [], raf: 0, glow: {} };
+  const at = (ms, fn) => anim.timers.push(setTimeout(fn, ms));
+  const mix = Object.fromEntries(after.map(r =>
+    [r.part, old[r.part] || { ...r, level: 'typical', score: 0 }]));
+  const paintMix = () => paintEngagement(V, Object.values(mix), []);
+  const tag = (part, on) => $$(`#curPanel .cur-fx em[data-part="${part}"]`)
+    .forEach(e => e.classList.toggle('lit', on));
+
+  const edges = [...new Set(eventIds.flatMap(
+    e => eventTargets(App.eventById[e]).edges))];
+  let t0 = 0;
+  if (edges.length) {
+    clearTimeout(App.pathTimer);
+    App.circuits.update(App.state.weights);
+    App.circuits.spotlight(edges);
+    App.circuits.cascade(edges, { stagger: 0.13, speed: 1.35 });
+    App.pathTimer = setTimeout(pathsDone, 2600);
+    t0 = 900;
+  }
+  paintMix();
+
+  moved.forEach((x, i) => at(t0 + i * ENG_STEP_MS, () => {
+    mix[x.r.part] = x.r;
+    paintMix();
+    tag(x.r.part, true);
+    if (x.d > 0) anim.glow[x.r.part] = { peak: ENG_PEAK[i],
+                                         start: performance.now() };
+  }));
+  const end = t0 + moved.length * ENG_STEP_MS + 900;
+  at(end, () => {
+    paintEngagement(V, after, focusIds());
+    for (const g of Object.values(anim.glow)) g.fade = performance.now();
+    moved.forEach(x => tag(x.r.part, false));
   });
+  at(end + 1000, stopEngAnim);
+
+  const frame = () => {
+    const now = performance.now();
+    for (const [part, g] of Object.entries(anim.glow)) {
+      const k = Math.min(1, (now - g.start) / 350)
+        * (g.fade ? Math.max(0, 1 - (now - g.fade) / 900) : 1);
+      if (App.structById[part]) V.setStructureGlow(part, g.peak * k);
+      else V.setRegionGlow(App.cortexById[part].label_index, (g.peak + 0.2) * k);
+    }
+    anim.raf = requestAnimationFrame(frame);
+  };
+  anim.raf = requestAnimationFrame(frame);
 }
 
 function focusCurrentPart(id) {
+  if (id !== App.curFocus) App.disputePart = null;
   App.curFocus = id;
-  renderCurrent();
+  App.curNote = null;
+  renderReading();
+}
+
+/** Let the user say which events a note describes. Only the choice of
+ *  events is theirs; what those events do stays with the rules. */
+function openReread(kind, i) {
+  const target = kind === 'target';
+  const note = (target ? App.state?.target_profile : App.state?.profile)
+    ?.notes?.[i];
+  if (!note) return;
+  const had = new Set(Object.keys(note.events || {}));
+  const cats = {};
+  for (const e of App.model.events) (cats[e.category] ||= []).push(e);
+  Modal.open(`
+    <div class="m-title">How should this be read?</div>
+    <div class="m-sub">\u201c${escHtml(note.text)}\u201d<br>Tick up to three
+      things it describes. The app's rules decide what each one does.</div>
+    <form id="reread">
+      ${Object.entries(cats).map(([c, evs]) => `
+        <fieldset class="qz-q">
+          <legend>${escHtml(c)}</legend>
+          <div class="qz-opts">${evs.map(e => `
+            <label class="qz-opt">
+              <input type="checkbox" value="${escHtml(e.id)}"
+                ${had.has(e.id) ? 'checked' : ''}>
+              <span>${escHtml(e.label)}</span>
+            </label>`).join('')}</div>
+        </fieldset>`).join('')}
+      <div class="qz-foot">
+        <span id="rereadMsg"></span>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>`);
+  $('#reread').onsubmit = async (e) => {
+    e.preventDefault();
+    const ids = $$('#reread input:checked').map(x => x.value);
+    const msg = $('#rereadMsg');
+    if (!ids.length) { msg.textContent = 'Pick at least one, or remove it.'; return; }
+    if (ids.length > 3) { msg.textContent = 'Up to three.'; return; }
+    const r = await (target ? API.editGoal : API.editNote)(i, ids);
+    if (!r.ok) { msg.textContent = r.reason; return; }
+    Modal.close();
+    App.disputePart = null;
+    const before = App.state?.engagement;
+    applyState(r.state);
+    focusNote(i);
+    if (!target) playEngagementChange(before, ids);
+    toast('Reading corrected', 'Rebuilt from the events you picked.');
+  };
+}
+
+/** "Doesn't feel right": what this row rests on, each with its fix, and a
+ *  box to describe what is missing. Never sets a part directly. */
+function disputeHtml(r) {
+  if (App.disputePart !== r.part) {
+    return `<a href="#" class="eng-dispute-open" data-dispute>Doesn't feel
+      right?</a>`;
+  }
+  const reasons = r.why?.reasons || [];
+  const items = (r.why?.refs || []).map((ref, i) => {
+    const [kind, val] = ref.split(':');
+    const fix = kind === 'note'
+      ? `<a href="#" data-edit="${escHtml(val)}">fix how it was read</a>
+         \u00b7 <a href="#" data-del="${escHtml(val)}">remove</a>`
+      : kind === 'answer'
+        ? `<a href="#" data-ref="${escHtml(ref)}">change answer</a>`
+      : kind === 'rarely' ? 'if you do, describe it below'
+      : kind === 'log' ? 'logged by you' : '';
+    return `<li>${escHtml(reasons[i] || '')}<span>${fix}</span></li>`;
+  });
+  return `
+    <div class="eng-dispute">
+      <div class="cur-group">DOESN'T FEEL RIGHT?</div>
+      ${items.length ? `<p>This reading rests on:</p><ul>${items.join('')}</ul>`
+        : ''}
+      <p>Correct any of these, or describe what is missing - what you
+        actually do, in your own words.</p>
+      <textarea id="disputeText" rows="2" maxlength="1200" data-grow
+        placeholder="e.g. I usually stay calm when I am criticised"></textarea>
+      <div class="vis-row">
+        <button class="cur-go" data-dispute-add>Add</button>
+        <button class="cur-ghost" data-dispute-close>Cancel</button>
+        <span class="cur-msg" id="disputeMsg"></span>
+      </div>
+    </div>`;
+}
+
+// Below this a part reads as steady; logging moves scores about 0.01/week.
+const TREND_STEADY = 0.005;
+
+/** Sparkline over recorded days, and which way the last week went. */
+function trendOf(part) {
+  const t = App.state?.engagement_trend;
+  const ys = t?.parts?.[part];
+  if (!ys || ys.length < 2) return null;
+  const days = t.days, last = days[days.length - 1];
+  const j = days.findIndex(d => d >= last - 7);
+  if (days[j] === last) return null;
+  const d = ys[ys.length - 1] - ys[j];
+  const word = Math.abs(d) < TREND_STEADY ? 'steady'
+    : d > 0 ? 'rising' : 'falling';
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (hi - lo < 0.02) { const m = (hi + lo) / 2; lo = m - 0.01; hi = m + 0.01; }
+  const W = 40, H = 12;
+  const pts = ys.map((y, k) => `${(k / (ys.length - 1) * W).toFixed(1)},${
+    (H - 1 - (y - lo) / (hi - lo) * (H - 2)).toFixed(1)}`).join(' ');
+  return {
+    svg: `<svg class="eng-spark ${word}" width="${W}" height="${H}"
+      viewBox="0 0 ${W} ${H}" aria-hidden="true"><polyline points="${pts}"/></svg>`,
+    text: `${word} since day ${days[j]}`,
+  };
 }
 
 // Scores in this model run to about +-0.5; the bar is full at that.
 const ENG_FULL = 0.5;
 
-function currentPanelHtml(rows, hasProfile) {
-  const row = (r) => {
-    const p = App.structById[r.part] || App.cortexById[r.part];
-    const w = Math.min(50, Math.abs(r.score) / ENG_FULL * 50);
-    const why = r.why?.meaning ? `
-      <div class="eng-why">${escHtml(cap(r.why.meaning))}.${
-        r.why.reasons?.length
-          ? ` <span>Mostly because you ${escHtml(joinAnd(r.why.reasons))}.</span>`
-          : ''}</div>` : '';
-    return `
-      <button class="eng-row ${r.level}" data-part="${r.part}">
-        <div class="eng-top">
-          <span class="eng-sw" style="background:${p.color}"></span>
-          <span class="eng-name">${escHtml(p.short || p.name)}</span>
-          <span class="eng-bar"><i style="width:${w.toFixed(1)}%"></i></span>
-          <span class="eng-arrow">${r.level === 'more' ? '\u25b2' : '\u25bc'}</span>
-        </div>${why}
-      </button>`;
-  };
+const partOf = (id) => App.structById[id] || App.cortexById[id];
+const nameOf = (r) => escHtml(partOf(r.part).short);
+
+/** A reason that came from something on screen links back to it. */
+function refLink(text, ref = '') {
+  return /^(note|answer):/.test(ref)
+    ? `<a href="#" class="eng-ref" data-ref="${escHtml(ref)}">${escHtml(text)}</a>`
+    : escHtml(text);
+}
+
+function evidenceText(ev) {
+  const parts = [['answer', 'answer'], ['note', 'note'], ['log', 'log']]
+    .filter(([k]) => ev[k] > 0)
+    .map(([k, w]) => `${ev[k]} ${w}${ev[k] !== 1 ? 's' : ''}`);
+  return parts.length ? `based on ${parts.join(' \u00b7 ')}`
+    : 'based only on what you rarely do';
+}
+
+/** The events that push this part each way, and which way the target
+ *  wants it. Each can be logged from here. */
+function leversHtml(r) {
+  const m = r.moves || {};
+  const t = onBrain(App.state?.target_engagement)
+    .find(x => x.part === r.part);
+  const gap = t ? t.score - r.score : 0;
+  const want = Math.abs(gap) < 0.04 ? null : gap > 0 ? 'up' : 'down';
+  const line = (key, word) => !m[key]?.length ? '' : `
+    <div class="eng-lever${want === key ? ' aim' : ''}">
+      <span>${word}${want === key ? ' <em>\u00b7 toward your target</em>' : ''}</span>
+      <div>${m[key].map(eid => `<button class="eng-log" data-log="${
+        escHtml(eid)}" title="Log one now">+ ${
+        escHtml(App.eventById[eid]?.label || eid)}</button>`).join('')}</div>
+    </div>`;
+  return `
+    <div class="eng-levers">
+      <div class="cur-group">WHAT MOVES IT</div>
+      ${line('up', 'Raises it')}${line('down', 'Lowers it')}
+    </div>`;
+}
+
+/** One part's row. Current explains with "because you ..."; Target lists
+ *  the aims behind it, which do not read as a sentence. */
+function engRow(r, target = false) {
+  const p = partOf(r.part);
+  const w = Math.min(50, Math.abs(r.score) / ENG_FULL * 50);
+  const reasons = r.why?.reasons || [];
+  const links = reasons.map((x, i) => refLink(x, r.why?.refs?.[i]));
+  const because = !reasons.length ? ''
+    : target ? ` <span>From: ${links.join(' \u00b7 ')}.</span>`
+    : ` <span>Mostly because you ${joinAnd(links)}.</span>`;
+  const tr = target ? null : trendOf(r.part);
+  const ev = !target && r.why?.evidence
+    ? `<div class="eng-ev">${evidenceText(r.why.evidence)}${
+      tr ? ` \u00b7 ${tr.text}` : ''}</div>` : '';
+  const why = r.why?.meaning
+    ? `<div class="eng-why">${escHtml(cap(r.why.meaning))}.${because}${ev}</div>`
+    : '';
+  const on = r.part === App.curFocus;
+  return `
+    <div class="eng-row ${r.level}" role="button" tabindex="0"
+         data-part="${r.part}">
+      <div class="eng-top">
+        <span class="eng-sw" style="background:${p.color}"></span>
+        <span class="eng-name">${escHtml(p.short || p.name)}</span>
+        <span class="eng-bar"><i style="width:${w.toFixed(1)}%"></i></span>
+        ${tr ? tr.svg : ''}
+        <span class="eng-arrow">${r.level === 'more' ? '\u25b2' : '\u25bc'}</span>
+      </div>${why}${on && !target ? leversHtml(r) + disputeHtml(r) : ''}
+    </div>`;
+}
+
+function engGroups(rows, target, unknownText) {
   const more = rows.filter(r => r.level === 'more');
   const less = rows.filter(r => r.level === 'less');
   const balanced = rows.filter(r => r.level === 'typical' && r.basis === 'balanced');
   const unknown = rows.filter(r => r.level === 'typical' && r.basis !== 'balanced');
-  const name = (r) => escHtml((App.structById[r.part] || App.cortexById[r.part]).short);
+  return `
+    ${more.length ? `<div class="cur-group">MORE ENGAGED</div>${more.map(r => engRow(r, target)).join('')}` : ''}
+    ${less.length ? `<div class="cur-group">LESS ENGAGED</div>${less.map(r => engRow(r, target)).join('')}` : ''}
+    ${balanced.length ? `<div class="cur-group">BALANCED</div>
+      <div class="eng-typical">${balanced.map(nameOf).join(', ')}
+        <span>What you described pulls these both ways, about equally, so
+          they come out near typical.</span></div>` : ''}
+    ${unknown.length && rows.length ? `<div class="cur-group">${unknownText[0]}</div>
+      <div class="eng-typical">${unknown.map(nameOf).join(', ')}
+        <span>${unknownText[1]}</span></div>` : ''}`;
+}
 
+function notesHtml(notes, delAttr, emptyText) {
+  if (!notes.length) return `<div class="eng-typical">${emptyText}</div>`;
+  return notes.map((n, i) => {
+    const read = Object.keys(n.events || {})
+      .map(e => App.eventById[e]?.label.toLowerCase() || e).join(', ');
+    const fx = noteTags(i);
+    return `
+      <div class="cur-note${i === App.curNote ? ' on' : ''}" data-note="${i}"
+           role="button" tabindex="0" title="Show what this touches">
+        <div>\u201c${escHtml(n.text)}\u201d
+          <span>read as ${escHtml(read)}</span>
+          ${fx.length ? `<div class="cur-fx">${fx.map(e => `
+            <em class="${e.dir}" data-part="${e.part}"><i style="background:${partOf(e.part).color}"></i>${
+              escHtml(partOf(e.part).short)} ${
+              e.dir === 'more' ? '\u25b2' : '\u25bc'}</em>`).join('')}</div>`
+            : ''}</div>
+        <button class="cur-x" ${delAttr === 'data-del' ? 'data-edit'
+          : 'data-edit-goal'}="${i}" title="Fix how this was read">\u270e</button>
+        <button class="cur-x" ${delAttr}="${i}" title="Remove">\u2715</button>
+      </div>`;
+  }).join('');
+}
+
+function targetPanelHtml(rows) {
+  const tp = App.state?.target_profile;
+  const answered = Object.keys(tp?.answers || {}).length;
+  return `
+    <div class="vis-kicker">TARGET</div>
+    <div class="vis-title">Who you want to become</div>
+    <div class="cur-sub">how that brain would be engaged, compared with typical
+      <span class="tag model">MODEL</span></div>
+    ${tp ? '' : `
+      <div class="cur-empty">No target yet, so progress is measured against
+        the app's default aims. Describe who you want to be above - "I want to
+        pause before I answer" - or answer the situations the way you would
+        like to react.</div>`}
+    ${engGroups(rows, true, ['NOT PART OF YOUR AIMS YET',
+      'What you are aiming for moves these too little to tell, or not at '
+      + 'all.'])}
+    <div class="cur-group">YOUR AIMS</div>
+    ${notesHtml(reactionsNotes(tp), 'data-del-goal',
+      'Nothing described yet. Add aims above, as many as you like.')}
+    <div class="vis-row">
+      <button class="cur-ghost" data-quiz="target">${answered
+        ? 'Edit situations' : 'Answer situations'}</button>
+      ${tp ? '<button class="cur-ghost" data-clear-target>Clear</button>' : ''}
+    </div>
+    <div class="cur-foot">
+      <span>Your target is what "gap closed" measures. Unwanted loops never go
+        below the app's floor: a working alarm system is part of any healthy
+        target.</span>
+    </div>`;
+}
+
+const reactionsNotes = (p) => p?.notes || [];
+
+function comparePanelHtml(cur, tgt) {
+  const byPart = (rows) => Object.fromEntries(rows.map(r => [r.part, r]));
+  const c = byPart(cur), t = byPart(tgt);
+  const ids = [...new Set([...Object.keys(c), ...Object.keys(t)])];
+  const mark = (r) => !r || r.level === 'typical' ? '\u2013'
+    : r.level === 'more' ? '\u25b2 more' : '\u25bc less';
+  const rows = ids.map(id => {
+    const gap = (t[id]?.score || 0) - (c[id]?.score || 0);
+    return { id, gap, c: c[id], t: t[id] };
+  }).sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap));
+  // Same band the engagement read-out uses for "about typical".
+  const label = (g) => Math.abs(g) < 0.04 ? 'on track'
+    : g > 0 ? 'needs more' : 'needs less';
+  return `
+    <div class="vis-kicker">COMPARE</div>
+    <div class="vis-title">Where you are, and where you are aiming</div>
+    <div class="cur-sub">left brain: now \u00b7 right brain: target
+      <span class="tag model">MODEL</span></div>
+    ${!App.state?.target_profile ? `<div class="cur-empty">No target yet.
+      Describe who you want to be in the Target tab and the right-hand brain
+      will show it.</div>` : ''}
+    ${!App.state?.profile ? `<div class="cur-empty">Nothing described about
+      how you react yet, so the left-hand brain is typical everywhere. Add
+      that in the Current tab.</div>` : ''}
+    ${rows.length ? `
+      <div class="cmp-row head"><span>PART</span><span>NOW</span>
+        <span>TARGET</span><span style="text-align:right">GAP</span></div>
+      ${rows.map(r => `
+        <div class="cmp-row" data-part="${r.id}">
+          <span class="eng-top"><span class="eng-sw"
+            style="background:${partOf(r.id).color}"></span>
+            ${escHtml(partOf(r.id).short)}</span>
+          <span>${mark(r.c)}</span><span>${mark(r.t)}</span>
+          <span class="gap ${label(r.gap) === 'on track' ? 'on' : ''}">${
+            label(r.gap)}</span>
+        </div>`).join('')}` : ''}`;
+}
+
+function overnightHtml() {
+  const s = App.state;
+  const o = s?.overnight;
+  if (!o?.pathways?.length || App.overnightSeen === s.day) return '';
+  const sleep = o.sleep >= 0.7 ? 'good' : o.sleep >= 0.45 ? 'middling' : 'poor';
+  return `
+    <div class="cur-night">
+      <div class="cur-night-top">
+        <span class="cur-group">WHILE YOU SLEPT</span>
+        <span class="tag model">MODEL</span>
+        <button class="cur-x" data-night-close title="Dismiss">\u00d7</button>
+      </div>
+      ${o.pathways.slice(0, 4).map(p => `
+        <div class="cur-night-row">
+          <span>${escHtml(p.label)}</span>
+          <span>${Math.round(p.kept * 100)}% of yesterday's
+            ${p.gain > 0 ? 'gain' : 'drop'} held</span>
+        </div>`).join('')}
+      <div class="cur-night-foot">The night was ${sleep} sleep. In this model
+        change sets overnight: what consolidates resists fading, and better
+        sleep keeps more. On the brain, the solid core of a connection is the
+        part that has set.</div>
+    </div>`;
+}
+
+function currentPanelHtml(rows, hasProfile) {
   return `
     <div class="vis-kicker">CURRENT</div>
     <div class="vis-title">How your brain is engaged</div>
     <div class="cur-sub">compared with a typical starting point
       <span class="tag model">MODEL</span></div>
+    ${overnightHtml()}
     ${hasProfile ? '' : `
       <div class="cur-empty">Nothing to show yet: the app knows nothing about
-        you, so every part is "typical". Describe how you tend to react below,
+        you, so every part is "typical". Describe how you tend to react above,
         and each thing you add shows which parts your habits lean on more or
         less than a typical person's.</div>`}
-    ${more.length ? `<div class="cur-group">MORE ENGAGED</div>${more.map(row).join('')}` : ''}
-    ${less.length ? `<div class="cur-group">LESS ENGAGED</div>${less.map(row).join('')}` : ''}
-    ${balanced.length ? `<div class="cur-group">BALANCED</div>
-      <div class="eng-typical">${balanced.map(name).join(', ')}
-        <span>What you described reaches these, but pulls them both ways or
-          about as much as typical.</span></div>` : ''}
-    ${unknown.length && hasProfile ? `<div class="cur-group">NOT ENOUGH INFORMATION YET</div>
-      <div class="eng-typical">${unknown.map(name).join(', ')}
-        <span>Nothing you have said touches these yet. Describe more, or
-          answer a few situations.</span></div>` : ''}
+    ${engGroups(rows, false, ['NOT ENOUGH INFORMATION YET',
+      'What you have said moves these too little to tell, or not at all. '
+      + 'Describe more, or answer a few situations.'])}
     <div class="cur-group">YOUR PATTERNS</div>
-    ${patternsHtml()}
-    <textarea id="curNote" rows="2" maxlength="400"
-      placeholder="How do you tend to react? e.g. I bottle things up at work and snap at home"></textarea>
+    ${notesHtml(App.state?.profile?.notes || [], 'data-del',
+      'Nothing described yet. Add as many as you like above, whenever you '
+      + 'think of one - each refines the picture.')}
     <div class="vis-row">
-      <button id="curNoteAdd" class="cur-go">Add</button>
-      <button class="cur-ghost" data-quiz>${hasProfile && Object.keys(
+      <button class="cur-ghost" data-quiz="current">${hasProfile && Object.keys(
         App.state.profile.answers || {}).length
           ? 'Edit situations' : 'Answer situations'}</button>
-      <span id="curNoteMsg" class="cur-msg"></span>
     </div>
+    ${hasProfile ? habitsHtml(App.state?.habits || []) : ''}
     ${hasProfile ? `
       <details class="cur-base">
         <summary>What counts as "typical"?</summary>
@@ -1462,39 +2049,75 @@ function currentPanelHtml(rows, hasProfile) {
 }
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const perWeek = (x) => (Math.round(x * 10) / 10).toString();
+
+function habitWhere(h) {
+  if (h.progress == null) return '';
+  if (h.progress >= 1) return 'at or past your aim';
+  if (h.progress < -0.05) return 'moving away from your aim';
+  if (h.progress < 0.05) return 'not moved yet';
+  return `${Math.round(h.progress * 20) * 5}% of the way`;
+}
+
+function habitRow(h) {
+  const p = h.progress == null ? null : Math.max(0, Math.min(1, h.progress));
+  return `
+    <div class="hab-row${h.progress != null && h.progress < -0.05 ? ' away' : ''}">
+      <div class="hab-top">
+        <span class="hab-name">${escHtml(h.label)}</span>
+        <span class="hab-num">${perWeek(h.start)} \u2192 <b>${perWeek(h.now)}</b>
+          <i>a week</i></span>
+        <button class="eng-log" data-log="${escHtml(h.event)}"
+          title="Log one now">+</button>
+      </div>
+      ${p == null ? '' : `<div class="hab-bar"><i style="width:${
+        (p * 100).toFixed(0)}%"></i></div>`}
+      <div class="hab-sub">${h.target != null
+        ? `aim ${perWeek(h.target)} a week \u00b7 ${habitWhere(h)}` : ''}${
+        h.logged ? `${h.target != null ? ' \u00b7 ' : ''}logged ${h.logged}\u00d7 `
+          + 'in the last 4 weeks' : ''}</div>
+    </div>`;
+}
+
+/** How often you do each thing: as described, now, and as aimed for. */
+function habitsHtml(rows) {
+  if (!rows.length) return '';
+  const aimed = rows.filter(h => h.progress != null);
+  const rest = rows.filter(h => h.progress == null);
+  const hasTarget = rows.some(h => h.target != null);
+  return `
+    <div class="cur-group">YOUR HABITS</div>
+    <div class="hab-intro">Times a week: what you described \u2192 now, updated
+      by what you log.${hasTarget ? ''
+        : ' Set a target to see how far each has come.'}</div>
+    ${aimed.map(habitRow).join('')}
+    ${rest.length ? `<details class="cur-base"${aimed.length ? '' : ' open'}>
+      <summary>${aimed.length ? 'Habits your target does not change'
+        : 'All habits'} (${rest.length})</summary>
+      ${rest.map(habitRow).join('')}</details>` : ''}
+    <div class="hab-foot">Assumes that on a day you log, you log what
+      happened. Only the situations you log about are updated; the rest keep
+      what you described.</div>`;
+}
 const joinAnd = (xs) => xs.length < 2 ? xs.join('')
   : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
 
-function patternsHtml() {
-  const notes = App.state?.profile?.notes || [];
-  if (!notes.length) {
-    return `<div class="eng-typical">Nothing described yet. Add as many as
-      you like, whenever you think of one - each refines the picture.</div>`;
-  }
-  return notes.map((n, i) => {
-    const read = Object.keys(n.events || {})
-      .map(e => App.eventById[e]?.label.toLowerCase() || e).join(', ');
-    return `
-      <div class="cur-note">
-        <div>\u201c${escHtml(n.text)}\u201d
-          <span>read as ${escHtml(read)}</span></div>
-        <button class="cur-x" data-del="${i}" title="Remove">\u2715</button>
-      </div>`;
-  }).join('');
-}
-
-async function openQuiz() {
+async function openQuiz(kind = 'current', showQ = null) {
+  const target = kind === 'target';
   let qs;
   try { qs = (await API.profileQuestions()).questions; }
   catch { toast('Could not load the questions'); return; }
-  const prev = App.state?.profile?.answers || {};
+  const prev = (target ? App.state?.target_profile : App.state?.profile)
+    ?.answers || {};
   const had = (qid, oid) => [].concat(prev[qid] || []).includes(oid);
   Modal.open(`
-    <div class="m-title">How you tend to react</div>
-    <div class="m-sub">Everyday situations - all optional. Tick everything you
-      usually do, not what you wish you did; skip any that do not fit, and
-      they count as typical. Written for this app: not a validated
-      questionnaire, and nothing here is an assessment.</div>
+    <div class="m-title">${target ? 'How you would like to react'
+                                  : 'How you tend to react'}</div>
+    <div class="m-sub">Everyday situations - all optional. ${target
+      ? 'Tick what you would like to do instead - the person you are aiming to be.'
+      : 'Tick everything you usually do, not what you wish you did.'} Skip any
+      that do not fit, and they count as typical. Written for this app: not a
+      validated questionnaire, and nothing here is an assessment.</div>
     <form id="quiz">
       ${qs.map(q => `
         <fieldset class="qz-q" data-q="${q.id}">
@@ -1508,19 +2131,29 @@ async function openQuiz() {
           </div>
         </fieldset>`).join('')}
       <fieldset class="qz-q">
-        <legend>Anything else about how you handle things? <i>optional - you
-          can add more later from the Current panel</i></legend>
-        <textarea id="quizText" rows="3" maxlength="400"
-          placeholder="e.g. I bottle things up at work and then snap at home"
+        <legend>${target ? 'Anything else you are aiming for?'
+          : 'Anything else about how you handle things?'} <i>optional - you
+          can add more later from the box above the panel</i></legend>
+        <textarea id="quizText" rows="3" maxlength="1200" data-grow
+          placeholder="${target
+            ? 'e.g. I want to stay calm when someone criticises me'
+            : 'e.g. I bottle things up at work and then snap at home'}"
           ></textarea>
       </fieldset>
       <div class="qz-foot">
         <span id="quizMsg">Read by the same classifier as your log entries -
           the language model when one is running. Anything you have logged
           is kept.</span>
-        <button type="submit" class="primary">Update my current brain</button>
+        <button type="submit" class="primary">${target
+          ? 'Update my target' : 'Update my current brain'}</button>
       </div>
     </form>`);
+
+  const shown = showQ && $(`#quiz [data-q="${CSS.escape(showQ)}"]`);
+  if (shown) {
+    shown.scrollIntoView({ block: 'center' });
+    shown.classList.add('flash');
+  }
 
   $('#quiz').onsubmit = async (e) => {
     e.preventDefault();
@@ -1535,13 +2168,15 @@ async function openQuiz() {
     btn.disabled = true;
     btn.textContent = 'Building\u2026';
     try {
-      const r = await API.setProfile(answers, $('#quizText').value);
+      const r = await (target ? API.setTarget : API.setProfile)(
+        answers, $('#quizText').value);
       Modal.close();
       App.replayDay = null;
       App.curFocus = null;
+      App.curNote = null;
       applyState(r.state);
       const read = (r.read_as || []).map(p => p.label.toLowerCase());
-      toast('Current brain updated from your answers',
+      toast(target ? 'Target updated' : 'Current brain updated from your answers',
         read.length ? `Your description read as: ${read.join(', ')}` : '');
     } catch (err) {
       btn.disabled = false;
@@ -1555,7 +2190,7 @@ async function runVisualise(text) {
   // Pressing Explain twice can put two replies in the air. Only the newest
   // is allowed to touch the brain.
   const seq = ++App.visSeq;
-  const read = $('#visRead'), out = $('#visOut'), go = $('#visGo');
+  const read = $('#visRead'), out = $('#visOut'), go = $('#composerGo');
   go.disabled = true;
   read.textContent = '';
   out.innerHTML = '';
@@ -1580,11 +2215,12 @@ async function explainVisualise(text, eventIds, seq) {
 
   const evs = a.events || [];
   $('#visRead').textContent = evs.length
-    ? `read as: ${evs.map(e => e.label.toLowerCase()).join(', ')}` : '';
+    ? `Based on: ${evs.map(e => e.label.toLowerCase()).join(', ')}` : '';
 
   const parts = [...(a.structures || []), ...(a.regions || [])]
     .filter(id => App.structById[id] || App.cortexById[id]);
 
+  App.visLevels = a.levels || {};
   visualiseParts(parts);
 
   out.innerHTML = `
@@ -1676,14 +2312,14 @@ function applyVisualise(focus = null) {
   App.viewer.selectMany([...labels.values()], structs, null);
   App.viewer.setEmphasis(
     labels.has(focus) ? [labels.get(focus)] : [],
-    structs.includes(focus) ? [focus] : []);
+    structs.includes(focus) ? [focus] : [], false, true);
   App.viewer.clearGlow();
 
   for (const id of structs) {
-    App.viewer.setStructureGlow(id, id === focus ? VIS_GLOW_FOCUS : VIS_GLOW);
+    App.viewer.setStructureGlow(id, visGlow(id, focus));
   }
   for (const [id, label] of labels) {
-    App.viewer.setRegionGlow(label, id === focus ? 0.7 : 0.4);
+    App.viewer.setRegionGlow(label, visGlow(id, focus));
   }
 }
 
@@ -1736,22 +2372,120 @@ function highlightAnalysis(a) {
 async function doLog(eventId, intensity = 1.0, note = '') {
   const ev = App.eventById[eventId];
   endPreview();
+  const before = { ...(App.state?.weights || {}) };
+  const habitBefore = App.state?.habits?.find(h => h.event === eventId);
   const res = await API.log(eventId, { intensity, note });
   applyState(res.state);
+  const habitAfter = res.state.habits?.find(h => h.event === eventId);
 
   animateResponse(ev);
+  const scale = playFork(ev, before, res.state.weights);
   // Rendered in place: the cascade above is playing on the brain right now,
   // and a dialog would be sitting on top of it.
   LogDock.set(resultHtml(res.applied, res.deltas, res.state));
   $('#againBtn').onclick = openTrigger;
   $('#nextDayBtn').onclick = async () => { await advance(1); };
 
-  const top = res.deltas[0];
-  if (top) {
+  const fmt = (d) => `${d.label} ${d.delta > 0 ? '+' : '\u2212'}`
+    + `${Math.abs(d.percent).toFixed(2)}%`;
+  const ups = res.deltas.filter(d => d.delta > 0).slice(0, 2);
+  const downs = res.deltas.filter(d => d.delta < 0).slice(0, 1);
+  const moved = [...ups, ...downs];
+  const habit = habitAfter ? ` \u00b7 habit ${perWeek(habitBefore?.now ?? 0)}`
+    + ` \u2192 ${perWeek(habitAfter.now)} a week`
+    + (habitAfter.target != null ? ` (aim ${perWeek(habitAfter.target)})` : '')
+    : '';
+  if (moved.length) {
     toast(`${ev.icon} ${ev.label}`,
-      `${top.label} ${top.delta > 0 ? '+' : ''}${top.percent.toFixed(2)}% `
-      + `(simulated)`);
+      `${moved.map(fmt).join(' \u00b7 ')} (simulated)`
+      + (scale > 1 ? ` \u00b7 thickness change shown \u00d7${scale} so it `
+        + 'can be seen' : '') + habit);
   }
+}
+
+/* Connections are drawn only when they are the story: the moment an
+ * experience is logged, the night after, or a part being inspected. */
+const PATH_ENLARGE_TO = 0.12;
+
+function endPaths() {
+  clearTimeout(App.pathTimer);
+  App.pathTimer = null;
+  App.circuits.spotlight(null);
+}
+
+/** Hand the tubes back to whatever the view shows once a replay ends. */
+function pathsDone() {
+  App.pathTimer = null;
+  App.circuits.spotlight(null);
+  showPartPaths();
+}
+
+/**
+ * The fork: every connection this experience moved, at its old strength,
+ * then easing to the new one - the route taken thickens, the ones it
+ * competes with thin. Real per-log changes are around 1%, invisible as
+ * thickness, so the change is enlarged by a stated factor, and the tubes
+ * leave afterwards so the enlarged state is never left on screen.
+ * Returns the factor used (1 = true scale, 0 = nothing shown).
+ */
+function playFork(ev, before, after) {
+  if (App.mode !== 'simulation' || App.circuits.deltaMode) return 0;
+  const acts = ev?.activations || {};
+  const moved = App.model.edges
+    .map(e => ({ id: e.id, d: (after[e.id] ?? 0) - (before[e.id] ?? 0),
+                 own: !!acts[e.pathway] }))
+    .filter(x => x.own || Math.abs(x.d) > 5e-4)
+    .sort((a, b) => (b.own - a.own) || Math.abs(b.d) - Math.abs(a.d))
+    .slice(0, 6);
+  if (!moved.length) return 0;
+  const big = Math.max(...moved.map(x => Math.abs(x.d)), 1e-6);
+  const scale = Math.max(1, Math.min(40, Math.round(PATH_ENLARGE_TO / big)));
+  const shown = {};
+  for (const x of moved) shown[x.id] = (before[x.id] ?? 0) + x.d * scale;
+
+  clearTimeout(App.pathTimer);
+  App.circuits.spotlight(moved.map(x => x.id));
+  App.circuits.animate(before, before, 0.01);
+  App.pathTimer = setTimeout(() => {
+    App.circuits.animate(before, shown, 1.8);
+    App.pathTimer = setTimeout(pathsDone, 4200);
+  }, 700);
+  return scale;
+}
+
+/** The night after: what of yesterday's change set, and what faded. */
+function playNight(before, s) {
+  const o = s.overnight;
+  if (App.mode !== 'simulation' || !o?.pathways?.length) return;
+  const top = o.pathways.slice(0, 3).map(p => p.pathway);
+  const ids = App.model.edges.filter(e => top.includes(e.pathway))
+    .map(e => e.id);
+  clearTimeout(App.pathTimer);
+  App.circuits.spotlight(ids);
+  App.circuits.animate(before, s.weights, 2.2);
+  App.circuits.setCores(s.consolidation, s.weights);
+  App.pathTimer = setTimeout(pathsDone, 5000);
+}
+
+/** Worn paths: a part in focus shows its own connections - glow for how
+ *  strong each is, solid core for the share that has consolidated. */
+function showPartPaths() {
+  if (App.pathTimer) return;
+  const s = App.viewState;
+  const part = App.mode === 'simulation' && READING.has(s)
+    ? App.curFocus : null;
+  const nodes = part ? App.model.nodes
+    .filter(n => n.structure === part || n.cortex === part)
+    .map(n => n.id) : [];
+  const ids = App.model.edges
+    .filter(e => nodes.includes(e.src) || nodes.includes(e.dst))
+    .map(e => e.id);
+  if (!ids.length) { App.circuits.spotlight(null); return; }
+  const tgt = s === 'target';
+  const w = (tgt ? App.state?.targets : App.state?.weights) || {};
+  App.circuits.spotlight(ids);
+  App.circuits.update(w);
+  App.circuits.setCores(tgt ? null : App.state?.consolidation, w);
 }
 
 /** Light the structures and fire pulses down the pathways the event used. */
@@ -1775,8 +2509,11 @@ function animateResponse(ev) {
 
 async function advance(days) {
   App.replayDay = null;
-  applyState(await API.advance(days));
+  const before = { ...(App.state?.weights || {}) };
+  const s = await API.advance(days);
+  applyState(s);
   $('#tlLive').classList.add('active');
+  if (days === 1) playNight(before, s);
   if (days > 1) toast(`${days} days passed`,
     'Unrehearsed pathways decayed; consolidated ones held.');
 }
@@ -1898,6 +2635,10 @@ function startLoop() {
     }
 
     App.viewer.render(dt, t);
+    if (App.viewer2 && document.body.classList.contains('split')) {
+      syncCameras();
+      App.viewer2.render(dt, t);
+    }
     App.circuits.render(dt, t);
     requestAnimationFrame(frame);
   }

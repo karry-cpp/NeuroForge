@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 os.environ.setdefault("NEUROFORGE_LLM", "off")
+os.environ["NEUROFORGE_AUTOSAVE"] = "0"
 
 from neuroforge import engagement as E
 from neuroforge import reactions as R
@@ -129,6 +130,25 @@ class TestEngagement(unittest.TestCase):
             if r["level"] != "typical":
                 self.assertEqual(r["basis"], "")
 
+    def test_one_way_nudge_is_not_balanced(self):
+        # One note pushes each part one way; below threshold that is too
+        # little information, not a balance of opposing pulls.
+        notes = [{"text": "x", "events": {"rumination": 4.0}}]
+        sim = R.build({}, notes)
+        rows = E.engagement(sim.current.snapshot(), sim.warmup_days,
+                            sim.warmup_days, R.sources({}, notes),
+                            R.profile_rates({}, notes))
+        self.assertFalse([r["part"] for r in rows
+                          if r["basis"] == "balanced"])
+
+    def test_opposing_pulls_are_balanced(self):
+        srcs = [{"label": "a", "events": {"rumination": 4.0}},
+                {"label": "b", "events": {"name_emotion": 4.0,
+                                           "pause": 4.0}}]
+        sim = Simulation(seed=0)
+        rows = E.engagement(sim.current.snapshot(), 0, 0, srcs)
+        self.assertIn("balanced", {r["basis"] for r in rows})
+
     def test_several_options_per_situation(self):
         both = R.chosen({"criticised": ["replay", "snap"]})
         self.assertEqual([o["id"] for _, o, _ in both], ["replay", "snap"])
@@ -169,12 +189,161 @@ class TestEngagement(unittest.TestCase):
                 self.assertTrue(r["why"]["meaning"], r["part"])
                 self.assertTrue(r["why"]["reasons"], r["part"])
 
+    def test_reasons_point_back_to_their_source(self):
+        notes = [{"text": "I go over things", "events": {"rumination": 4.0}}]
+        sim = R.build(RUMINATOR, notes)
+        srcs = R.sources(RUMINATOR, notes)
+        refs = {s["ref"] for s in srcs}
+        rows = E.engagement(sim.current.snapshot(), sim.warmup_days,
+                            sim.warmup_days, srcs,
+                            R.profile_rates(RUMINATOR, notes))
+        for r in rows:
+            if r["level"] == "typical":
+                continue
+            self.assertEqual(len(r["why"]["refs"]), len(r["why"]["reasons"]))
+            for ref in r["why"]["refs"]:
+                self.assertTrue(ref in refs or ref.startswith("rarely:"), ref)
+        amy = next(r for r in rows if r["part"] == "amygdala")
+        self.assertGreaterEqual(amy["why"]["evidence"]["note"], 1)
+        self.assertGreaterEqual(amy["why"]["evidence"]["answer"], 1)
+
+    def test_note_effects_agree_with_the_rows(self):
+        fx = {e["part"]: e["dir"] for e in E.effects({"rumination": 4.0})}
+        self.assertEqual(fx.get("amygdala"), "more")
+        self.assertEqual(E.effects({}), [])
+
+    def test_levers_push_each_way(self):
+        m = E._levers("vlPFC")
+        self.assertTrue(m["up"] and m["down"])
+        self.assertFalse(set(m["up"]) & set(m["down"]))
+
+    def test_reread_keeps_rates_and_drops_unknowns(self):
+        n = {"text": "x", "events": {"rumination": 2.0}}
+        got = R.reread(n, ["rumination", "pause", "made_up"])
+        self.assertEqual(got["events"],
+                         {"rumination": 2.0, "pause": R.TEXT_RATE})
+        self.assertIsNone(R.reread(n, ["made_up"]))
+
+    def test_trend_ends_at_todays_score(self):
+        sim = R.build(RUMINATOR)
+        for _ in range(3):
+            sim.log_event("pause")
+            sim.advance_day()
+        t = E.trend(sim.history, sim.warmup_days, sim.day)
+        self.assertEqual(t["days"][-1], sim.day)
+        rows = {r["part"]: r["score"] for r in E.engagement(
+            sim.current.snapshot(), sim.warmup_days + sim.day,
+            sim.warmup_days)}
+        for part, ys in t["parts"].items():
+            self.assertEqual(len(ys), len(t["days"]))
+            self.assertAlmostEqual(ys[-1], rows[part], places=3)
+
     def test_no_profile_means_no_readout(self):
         # Without answers there is nothing about the person to compare.
         from neuroforge.server import routes
         sim = Simulation(seed=0)
         sim.log_event("rumination")
         self.assertEqual(routes._state(sim)["engagement"], [])
+
+
+class TestHabits(unittest.TestCase):
+
+    class _Log:
+        def __init__(self, day, event_id):
+            self.day, self.event_id = day, event_id
+
+    def test_no_logs_keeps_the_description(self):
+        start = {"rumination": 3.0}
+        self.assertEqual(R.habit_rates(start, [], 5), start)
+
+    def test_logging_moves_the_habit_and_its_alternatives(self):
+        start = R.profile_rates(RUMINATOR)
+        log = [self._Log(d, "reappraisal") for d in range(14)]
+        now = R.habit_rates(start, log, 14)
+        self.assertGreater(now["reappraisal"], start.get("reappraisal", 0))
+        # Reframing is an alternative to rumination after criticism...
+        self.assertLess(now["rumination"], start["rumination"])
+        # ...but says nothing about sleep.
+        self.assertEqual(now["sleep_poor"], start["sleep_poor"])
+
+    def test_old_logs_fall_out_of_the_window(self):
+        start = {"pause": 0.0}
+        log = [self._Log(0, "pause")]
+        self.assertGreater(R.habit_rates(start, log, 1)["pause"], 0)
+        self.assertEqual(R.habit_rates(start, log, R.HABIT_WINDOW + 1),
+                         start)
+
+    def test_progress_toward_the_target(self):
+        sim = R.build(RUMINATOR)
+        _, tp = R.build_target(REGULATED)
+        for _ in range(10):
+            sim.log_event("reappraisal")
+            sim.advance_day()
+        rows = {h["event"]: h for h in R.habits(sim.profile, tp,
+                                                 sim.log, sim.day)}
+        self.assertGreater(rows["reappraisal"]["progress"], 0)
+        self.assertGreater(rows["rumination"]["progress"], 0)
+
+    def test_logging_retires_rarely(self):
+        from neuroforge.server import routes
+        sim = R.build(RUMINATOR)
+        for _ in range(14):
+            sim.log_event("name_emotion")
+            sim.advance_day()
+        refs = [x for r in routes._state(sim)["engagement"]
+                for x in r["why"].get("refs", [])]
+        self.assertNotIn("rarely:name_emotion", refs)
+
+
+class TestTarget(unittest.TestCase):
+
+    def test_alarm_system_is_never_aimed_at_zero(self):
+        from neuroforge.atlas import PATHWAYS
+        weights, _ = R.build_target(REGULATED)
+        sim = Simulation(seed=0)
+        sim.set_target(weights, {})
+        for pid, pw in PATHWAYS.items():
+            if not pw.desirable:
+                self.assertGreaterEqual(
+                    sim.target.pathway_strength(pid), pw.target - 1e-9, pid)
+
+    def test_progress_measures_against_the_users_target(self):
+        sim = R.build(RUMINATOR)
+        before = sim.alignment
+        weights, prof = R.build_target(REGULATED)
+        sim.set_target(weights, prof)
+        self.assertNotAlmostEqual(sim.alignment, before)
+        sim.set_target(None, None)
+        self.assertAlmostEqual(sim.alignment, before)
+
+    def test_target_survives_save_and_load(self):
+        sim = R.build(RUMINATOR)
+        sim.set_target(*R.build_target(REGULATED))
+        path = os.path.join(tempfile.mkdtemp(), "s.json")
+        sim.save(path)
+        back = Simulation.load(path)
+        self.assertEqual(back.target_weights, sim.target_weights)
+        self.assertAlmostEqual(back.progress, sim.progress, places=6)
+
+
+class TestAutosave(unittest.TestCase):
+
+    def test_restart_restores_the_session(self):
+        from neuroforge.server import routes
+        path = os.path.join(tempfile.mkdtemp(), "autosave.json")
+        old_sim, old_path = routes.SIM, routes.AUTOSAVE
+        os.environ["NEUROFORGE_AUTOSAVE"] = "1"
+        try:
+            routes.AUTOSAVE = path
+            routes.SIM = R.build(RUMINATOR)
+            routes.SIM.log_event("pause")
+            routes._persist()
+            back = routes._restore()
+            self.assertEqual(back.profile, routes.SIM.profile)
+            self.assertEqual([e.event_id for e in back.log], ["pause"])
+        finally:
+            os.environ["NEUROFORGE_AUTOSAVE"] = "0"
+            routes.SIM, routes.AUTOSAVE = old_sim, old_path
 
 
 if __name__ == "__main__":

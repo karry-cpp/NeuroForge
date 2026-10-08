@@ -24,6 +24,13 @@
   <div id="vignette"></div>
   <div id="pinLayer"></div>
   <div id="hoverTip" class="hidden"></div>
+  <div class="split-label">CURRENT</div>
+</div>
+<!-- Compare only: the target brain, camera-linked to the one on the left. -->
+<div id="stage2">
+  <canvas id="gl2"></canvas>
+  <div id="pinLayer2"></div>
+  <div class="split-label">TARGET</div>
 </div>
 
 <!-- ============================== LOADER =============================== -->
@@ -167,26 +174,28 @@ things move backwards. A model value, not a measurement.">
   <div id="stateHint">simulated strengths from your logged practice</div>
 </div>
 
-<!-- =========================== VISUALISE PANEL ========================= -->
-<!-- Docked right, clear of the brain. Nothing typed here is recorded: it is
-     a look-up of what the rules associate with the words, not a log entry. -->
-<aside id="visPanel" class="hidden">
-  <div class="vis-kicker">WHAT IS HAPPENING</div>
-  <div class="vis-title">Describe how you feel</div>
-  <textarea id="visText" rows="3" spellcheck="false"
-            placeholder="e.g. my chest is tight and I keep replaying the argument"></textarea>
-  <div class="vis-row">
-    <button id="visGo">Explain</button>
-    <button id="visReset" class="ghost">Reset</button>
-    <span id="visRead"></span>
+<!-- ============================== SIM PANEL ============================ -->
+<!-- One place to type. What the text is for follows the tab: Current adds
+     a habit, Target an aim, Visualise explains a moment. -->
+<aside id="simPanel" class="hidden">
+  <div id="composer">
+    <div id="composerLabel" class="vis-kicker"></div>
+    <textarea id="composerText" rows="2" maxlength="1200" spellcheck="false"
+              data-grow></textarea>
+    <span class="box-count"></span>
+    <div class="vis-row">
+      <button id="composerGo" class="cur-go">Add</button>
+      <button id="visReset" class="ghost hidden">Reset</button>
+      <span id="composerMsg" class="cur-msg"></span>
+    </div>
   </div>
-  <div id="visOut"></div>
+  <!-- Visualise: nothing typed here is recorded. -->
+  <div id="visBody" class="hidden">
+    <div id="visOut"></div>
+    <div id="visRead"></div>
+  </div>
+  <div id="curPanel"></div>
 </aside>
-
-<!-- ============================ CURRENT PANEL ========================== -->
-<!-- Which parts the model has more or less engaged than a typical starting
-     point, and what in the user's answers and logs drove each one. -->
-<aside id="curPanel" class="hidden"></aside>
 
 <!-- ============================== ACTIONS ============================== -->
 <div id="actionbar">

@@ -164,7 +164,7 @@ Both are documented in `DK_TO_LABEL` so they can be argued with.
 > fsaverage is an average of 40 brains. It is not the user's brain. The scene
 > metadata says so.
 
-**`SCENE_VERSION` in `build.py` is currently 12. Bump it whenever geometry
+**`SCENE_VERSION` in `build.py` is currently 13. Bump it whenever geometry
 or any published colour changes**, or a stale cache in `neuroforge/_cache/`
 will be served silently. Cortical colours also live in `REGION_COLORS` in
 `viewer.js`; keep the two in step.

@@ -65,6 +65,22 @@ class TestPlasticity(unittest.TestCase):
         self.assertGreater(good.current.pathway_strength("regulation"),
                            bad.current.pathway_strength("regulation"))
 
+    def test_overnight_recap(self):
+        kept = {}
+        for ev in ("sleep_good", "sleep_poor"):
+            s = Simulation(seed=1)
+            s.log_event(ev)
+            for _ in range(3):
+                s.log_event("reappraisal")
+            s.advance_day()
+            rows = {r["pathway"]: r for r in s.last_overnight["pathways"]}
+            self.assertIn("regulation", rows)
+            for r in rows.values():
+                self.assertGreaterEqual(r["kept"], 0.0)
+                self.assertLessEqual(r["kept"], 1.0)
+            kept[ev] = rows["regulation"]["kept"]
+        self.assertGreater(kept["sleep_good"], kept["sleep_poor"])
+
     def test_avoidance_moves_away_from_target(self):
         s = Simulation()
         a0 = s.alignment

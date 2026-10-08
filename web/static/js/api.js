@@ -33,6 +33,14 @@ export const API = {
   setProfile: (answers, text) => jpost('/api/profile', { answers, text }),
   addNote: (text) => jpost('/api/profile/note', { text }),
   deleteNote: (index) => jpost('/api/profile/note/delete', { index }),
+  editNote: (index, events) =>
+    jpost('/api/profile/note/edit', { index, events }),
+  setTarget: (answers, text) => jpost('/api/target', { answers, text }),
+  addGoal: (text) => jpost('/api/target/goal', { text }),
+  deleteGoal: (index) => jpost('/api/target/goal/delete', { index }),
+  editGoal: (index, events) =>
+    jpost('/api/target/goal/edit', { index, events }),
+  clearTarget: () => jpost('/api/target/clear', {}),
   advance:  (days = 1) => jpost('/api/sim/advance', { days }),
   replay:   (day) => jpost('/api/sim/replay', { day }),
   reset:    (clearProfile = false) =>

@@ -125,6 +125,12 @@ _CUES: Dict[str, List[str]] = {
     ],
     "rumination": [
         "ruminat", "spiral", "couldn't stop thinking", "could not stop thinking",
+        # Lingering hurt and wishing harm on someone are thoughts that keep
+        # going, not things done - they belong here, not under outburst.
+        "still upset", "still feel upset", "still angry about",
+        "can't get over", "cannot get over", "can't let it go",
+        "should suffer", "deserve to suffer", "want them to suffer",
+        "want her to suffer", "want him to suffer",
         "kept replaying", "went over and over", "overthought", "stewed",
         # The Visualise tab is typed in the present tense - "I keep
         # replaying", not "I kept replaying" - and the past-tense-only cues
@@ -184,6 +190,14 @@ _CUES: Dict[str, List[str]] = {
     "recovery": [
         "rested", "downtime", "saw friends", "time with", "recovered",
         "took it easy", "day off", "connected with",
+    ],
+    "social_hurt": [
+        "ignored me", "ignoring me", "ignores me", "left out", "excluded",
+        "rejected", "felt inferior", "feel inferior", "not good enough",
+        "snubbed", "did not acknowledge", "didn't acknowledge",
+        "hurt my feelings", "felt hurt", "feel hurt", "humiliated",
+        "felt small", "left me out", "nobody talked to me",
+        "cold shoulder", "felt unwanted", "felt invisible",
     ],
 }
 
@@ -276,6 +290,11 @@ Rules:
 - "confidence" is your honest uncertainty. Low confidence is useful and safe;
   a confident wrong guess is not.
 - "why" must point at the user's actual words, so they can disagree with you.
+- reactive_outburst ONLY when they actually did or said something outwardly \
+(shouted, snapped, sent an angry message, hit something). Angry or vengeful \
+THOUGHTS without an outward act ("they should suffer", "I wanted to \
+scream") are rumination, not reactive_outburst.
+- Being ignored, excluded, rejected or made to feel inferior is social_hurt.
 """
 
 
@@ -288,7 +307,8 @@ def _post_json(url: str, payload: Dict[str, Any],
                headers: Dict[str, str], timeout: float) -> Dict[str, Any]:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "NeuroForge", **headers},
         method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
@@ -495,6 +515,24 @@ def _cross_check(r: Interpretation, text: str) -> Interpretation:
     return r
 
 
+def _outburst_gate(r: Interpretation, text: str) -> Interpretation:
+    """Drop a model's 'lashed out' when the words describe no outburst.
+
+    Logging one credits the stress-autopilot and threat pathways, so a
+    resentful thought misread as an act moves the brain the wrong way.
+    The keyword cues for it are all outward acts or plain anger.
+    """
+    if not any(p.event == "reactive_outburst" for p in r.proposals):
+        return r
+    if any(p.event == "reactive_outburst"
+           for p in classify_keywords(text).proposals):
+        return r
+    r.proposals = [p for p in r.proposals if p.event != "reactive_outburst"]
+    r.note += (" 'Lashed out' was removed: nothing in the entry describes "
+               "an outward reaction.")
+    return r
+
+
 def interpret(text: str, allow_llm: bool = True) -> Interpretation:
     """
     Best available interpretation, degrading quietly to keywords.
@@ -508,6 +546,8 @@ def interpret(text: str, allow_llm: bool = True) -> Interpretation:
     if allow_llm and llm_config()["enabled"]:
         try:
             r = classify_llm(text)
+            if r.proposals:
+                r = _outburst_gate(r, text)
             if r.proposals:
                 return _cross_check(r, text)
         except (urllib.error.URLError, urllib.error.HTTPError,

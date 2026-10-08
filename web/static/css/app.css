@@ -64,6 +64,22 @@ b { font-weight: 600; }
 /* ------------------------------------------------------------------ stage */
 #stage { position: fixed; inset: 0; }
 #gl { width: 100%; height: 100%; display: block; }
+#stage2 { display: none; position: fixed; top: 0; bottom: 0; }
+#gl2 { width: 100%; height: 100%; display: block; }
+#pinLayer2 { position: absolute; inset: 0; pointer-events: none; }
+/* Compare: two brains share the space left of the side panel. */
+body.split #stage { right: auto; width: calc((100vw - 372px) / 2); }
+body.split #stage2 { display: block; left: calc((100vw - 372px) / 2);
+                     width: calc((100vw - 372px) / 2);
+                     border-left: 1px solid var(--line); }
+.split-label {
+  display: none; position: absolute; top: 70px; left: 50%;
+  transform: translateX(-50%); font-size: 10px; letter-spacing: .16em;
+  color: var(--txt-faint); pointer-events: none;
+}
+body.split .split-label { display: block; }
+/* The view dock would sit on top of the left-hand brain. */
+body.split #leftdock { display: none; }
 
 #vignette {
   position: absolute; inset: 0; pointer-events: none;
@@ -213,6 +229,11 @@ b { font-weight: 600; }
   font-size: 10.5px; letter-spacing: .07em; color: var(--txt-faint);
   margin-bottom: 8px;
 }
+.docksub {
+  margin: 6px 0 2px 2px; font-size: 9.5px; color: var(--txt-faint);
+  opacity: .75;
+}
+.docksub:first-of-type { margin-top: 0; }
 .viewbtn {
   display: block; width: 100%; text-align: left; font-size: 11.5px;
   padding: 5px 9px; border-radius: 6px; color: var(--txt-dim);
@@ -337,7 +358,7 @@ b { font-weight: 600; }
 /* ---- Visualise panel --------------------------------------------------- */
 /* Sized to its content: with nothing explained yet it ends just below the
    buttons, and only grows once there is something to read. */
-#visPanel, #curPanel {
+#simPanel {
   position: fixed; right: 18px; top: 86px; z-index: 36;
   width: 340px; max-height: calc(100vh - 250px); overflow-y: auto;
   padding: 16px 16px 14px;
@@ -402,11 +423,12 @@ b { font-weight: 600; }
   flex: 1 1 100%; min-width: 0; font-size: 10.5px; color: var(--txt-faint);
   line-height: 1.45;
 }
+#visRead:not(:empty) { margin-top: 10px; }
 #visRead b { color: var(--txt); font-weight: 600; }
 #visRead i { font-style: normal; opacity: .75; }
 
 #visOut:not(:empty) {
-  margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--line);
+  padding-top: 12px; border-top: 1px solid var(--line);
 }
 .vis-prose {
   margin: 0; font-size: 12px; line-height: 1.7; color: var(--txt-dim);
@@ -437,6 +459,26 @@ b { font-weight: 600; }
 .vis-src { margin-top: 10px; font-size: 10px; color: var(--txt-faint); }
 
 /* ---- Current panel ------------------------------------------------------ */
+#composer { margin-bottom: 12px; }
+#composerLabel { margin-bottom: 7px; }
+#composerText {
+  width: 100%; padding: 9px 11px; resize: vertical; font: inherit;
+  font-size: 12.5px; line-height: 1.5; color: var(--txt);
+  background: rgba(255, 255, 255, .03);
+  border: 1px solid var(--line-2); border-radius: 8px;
+}
+#composerText::placeholder { color: var(--txt-faint); }
+#composerText:focus { outline: none; border-color: var(--sel-line); }
+#composerText { overflow-y: hidden; transition: height .12s ease; }
+.box-count { display: block; text-align: right; font-size: 10px;
+             color: var(--txt-faint); font-variant-numeric: tabular-nums; }
+.box-count:empty { display: none; }
+.cmp-row { display: grid; grid-template-columns: 92px 1fr 1fr 80px;
+           align-items: center; gap: 8px; padding: 6px 0; font-size: 11.5px;
+           border-bottom: 1px solid rgba(190, 198, 210, .06); }
+.cmp-row.head { font-size: 9.5px; letter-spacing: .1em; color: var(--txt-faint); }
+.cmp-row .gap { font-size: 10.5px; color: var(--txt-dim); text-align: right; }
+.cmp-row .gap.on { color: var(--txt-faint); }
 .cur-sub {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   margin: -4px 0 12px; font-size: 10.5px; color: var(--txt-faint);
@@ -484,6 +526,69 @@ b { font-weight: 600; }
   color: var(--txt-dim);
 }
 .eng-why span { color: var(--txt-faint); }
+.eng-ref {
+  color: var(--txt-dim); cursor: pointer; text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.eng-ref:hover, .eng-ref:focus-visible { color: var(--txt); outline: none; }
+.eng-ev { margin-top: 2px; font-size: 10px; color: var(--txt-faint);
+          opacity: .85; }
+.eng-levers { margin: 6px 0 2px 17px; cursor: default; }
+.eng-levers .cur-group { margin: 4px 0; }
+.eng-lever { padding: 3px 0; font-size: 10.5px; color: var(--txt-faint); }
+.eng-lever > span { display: block; margin-bottom: 3px; }
+.eng-lever em { font-style: normal; font-size: 9.5px; opacity: .8; }
+.eng-lever.aim > span { color: var(--txt); }
+.eng-lever > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.eng-log {
+  padding: 2px 7px; font-size: 10.5px; color: var(--txt-dim);
+  background: rgba(255, 255, 255, .03); border: 1px solid var(--line);
+  border-radius: 5px; cursor: pointer;
+}
+.eng-log:hover, .eng-log:focus-visible {
+  color: var(--txt); border-color: var(--line-2); outline: none;
+}
+.eng-lever.aim .eng-log { border-color: var(--sel-line); color: var(--txt); }
+.eng-spark { flex: none; overflow: visible; }
+.eng-spark polyline { fill: none; stroke: var(--txt-faint); stroke-width: 1.2;
+                      stroke-linejoin: round; stroke-linecap: round; }
+.eng-spark.rising polyline, .eng-spark.falling polyline { stroke: var(--txt-dim); }
+.eng-dispute-open {
+  display: inline-block; margin: 6px 0 0 17px; font-size: 10.5px;
+  color: var(--txt-faint); text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.eng-dispute-open:hover { color: var(--txt-dim); }
+.eng-dispute { margin: 6px 0 2px 17px; font-size: 10.5px; line-height: 1.5;
+               color: var(--txt-dim); cursor: default; }
+.eng-dispute p { margin: 4px 0; color: var(--txt-faint); }
+.eng-dispute ul { margin: 2px 0 6px; padding-left: 14px; }
+.eng-dispute li span { display: block; color: var(--txt-faint); }
+.eng-dispute a { color: var(--txt-dim); text-decoration: underline dotted;
+                 text-underline-offset: 2px; }
+.eng-dispute a:hover { color: var(--txt); }
+.eng-dispute textarea {
+  width: 100%; margin: 4px 0 6px; padding: 7px 9px; resize: vertical;
+  font: inherit; font-size: 11.5px; color: var(--txt);
+  background: rgba(255, 255, 255, .03);
+  border: 1px solid var(--line-2); border-radius: 7px;
+}
+.eng-dispute textarea:focus { outline: none; border-color: var(--sel-line); }
+.cur-night {
+  padding: 8px 12px 10px; margin-bottom: 12px; border-radius: 8px;
+  background: rgba(255, 255, 255, .03); border: 1px solid var(--line);
+}
+.cur-night-top { display: flex; align-items: center; gap: 8px; }
+.cur-night-top .cur-group { flex: 1; margin: 0; }
+.cur-night-top .tag { font-size: 8.5px; padding: 1.5px 6px; border-radius: 4px;
+                      letter-spacing: .1em; font-weight: 600; }
+.cur-night-row {
+  display: flex; justify-content: space-between; gap: 10px; padding: 4px 0;
+  font-size: 11.5px; color: var(--txt);
+}
+.cur-night-row span:last-child { color: var(--txt-dim); text-align: right; }
+.cur-night-foot { margin-top: 6px; font-size: 10.5px; line-height: 1.5;
+                  color: var(--txt-faint); }
 .cur-base { margin-top: 12px; font-size: 11px; color: var(--txt-faint); }
 .cur-base summary { cursor: pointer; }
 .cur-base summary:hover { color: var(--txt-dim); }
@@ -497,6 +602,25 @@ b { font-weight: 600; }
 }
 .cur-foot span { flex: 1; font-size: 10px; line-height: 1.5;
                  color: var(--txt-faint); }
+
+/* ---- Habits ------------------------------------------------------------- */
+.hab-intro, .hab-foot { font-size: 10.5px; line-height: 1.5;
+                        color: var(--txt-faint); margin-bottom: 6px; }
+.hab-foot { margin-top: 8px; }
+.hab-row { padding: 6px 0; border-bottom: 1px solid rgba(190, 198, 210, .06); }
+.hab-top { display: flex; align-items: center; gap: 8px; }
+.hab-name { flex: 1; font-size: 11.5px; color: var(--txt); }
+.hab-num { font-size: 11px; color: var(--txt-dim);
+           font-variant-numeric: tabular-nums; }
+.hab-num b { color: var(--txt); font-weight: 600; }
+.hab-num i { font-style: normal; font-size: 10px; color: var(--txt-faint); }
+.hab-top .eng-log { padding: 0 6px; line-height: 16px; }
+.hab-bar { position: relative; height: 4px; margin: 5px 0 3px; border-radius: 2px;
+           background: rgba(255, 255, 255, .06); }
+.hab-bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px;
+             background: #e8eaee; transition: width .6s ease; }
+.hab-sub { font-size: 10px; color: var(--txt-faint); }
+.hab-row.away .hab-sub { color: var(--txt-dim); }
 
 /* ---- "How you tend to react" ------------------------------------------- */
 .qz-q { border: 0; margin: 0 0 18px; padding: 0; }
@@ -525,14 +649,6 @@ b { font-weight: 600; }
                 color: var(--txt-faint); }
 .qz-foot button { padding: 10px 20px; border-radius: 10px; font-size: 12.5px; }
 
-#curNote {
-  width: 100%; margin-top: 10px; padding: 9px 11px; resize: vertical;
-  font: inherit; font-size: 12px; line-height: 1.5; color: var(--txt);
-  background: rgba(255, 255, 255, .03);
-  border: 1px solid var(--line-2); border-radius: 8px;
-}
-#curNote::placeholder { color: var(--txt-faint); }
-#curNote:focus { outline: none; border-color: var(--sel-line); }
 .cur-msg { flex: 1; font-size: 10.5px; line-height: 1.45;
            color: var(--txt-faint); }
 .cur-note {
@@ -542,6 +658,31 @@ b { font-weight: 600; }
 }
 .cur-note > div { flex: 1; }
 .cur-note span { display: block; font-size: 10.5px; color: var(--txt-faint); }
+.cur-note[data-note] {
+  margin: 0 -8px; padding: 6px 8px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: background var(--fast);
+}
+.cur-note[data-note]:hover, .cur-note[data-note]:focus-visible,
+.cur-note.on {
+  background: var(--sel); border-color: var(--line-2); outline: none;
+}
+.cur-fx { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 3px; }
+.cur-fx em {
+  display: inline-flex; align-items: center; gap: 4px; font-style: normal;
+  font-size: 10px; color: var(--txt-dim);
+}
+.cur-fx em.less { color: var(--txt-faint); }
+.cur-fx i { width: 6px; height: 6px; border-radius: 50%; }
+.cur-fx em { transition: color .3s; }
+.cur-fx em i { transition: transform .3s; }
+.cur-fx em.lit { color: var(--txt); }
+.cur-fx em.lit i { transform: scale(1.6); }
+@keyframes nf-flash {
+  from { box-shadow: 0 0 0 2px var(--sel-line); }
+  to { box-shadow: 0 0 0 2px transparent; }
+}
+.cur-note.flash, .qz-q.flash { animation: nf-flash 1.6s ease-out; }
+.qz-q.flash { border-radius: 8px; }
 .cur-x {
   width: 20px; height: 20px; border-radius: 5px; font-size: 10px;
   color: var(--txt-faint); background: transparent;

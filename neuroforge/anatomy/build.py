@@ -43,7 +43,8 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(
 #      table, and the curves between them routed through white matter.
 # v12: region/structure colours re-picked so co-highlighted parts differ
 #      (vlPFC, vmPFC, caudate and mPFC were all near the same blue).
-SCENE_VERSION = 12
+# v13: vlPFC toned down (#8b5cf6 -> #8468c0).
+SCENE_VERSION = 13
 
 
 # --------------------------------------------------------------------------

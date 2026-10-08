@@ -286,23 +286,25 @@ def _clip(v: float, lo: float, hi: float) -> float:
 # --------------------------------------------------------------------------
 
 
-def alignment(cm: Connectome) -> float:
+def alignment(cm: Connectome, target: List[float] | None = None) -> float:
     """0..1 'how close is the current pattern to the chosen target'.
 
-    Plain mean absolute difference across connections, inverted.
+    Plain mean absolute difference across connections, inverted. `target`
+    is the user's own target brain when they have described one.
     """
-    v, t = cm.vector(), cm.target_vector()
+    v, t = cm.vector(), target or cm.target_vector()
     return 1.0 - sum(abs(a - b) for a, b in zip(v, t)) / len(v)
 
 
-def progress(cm: Connectome, start_vector: List[float]) -> float:
+def progress(cm: Connectome, start_vector: List[float],
+             target: List[float] | None = None) -> float:
     """0..1 'how much of the original gap has been closed'.
 
     Uses the distance at day 0 as the denominator, so it starts at 0 and
     reaches 1 when the target is met. Can go slightly negative if things
     move backwards, which is honest and worth showing.
     """
-    t = cm.target_vector()
+    t = target or cm.target_vector()
     d0 = sum(abs(a - b) for a, b in zip(start_vector, t))
     dn = sum(abs(a - b) for a, b in zip(cm.vector(), t))
     if d0 <= 1e-9:
@@ -310,13 +312,15 @@ def progress(cm: Connectome, start_vector: List[float]) -> float:
     return _clip(1.0 - dn / d0, -0.5, 1.0)
 
 
-def per_pathway_progress(cm: Connectome,
-                         start: Dict[str, float]) -> Dict[str, float]:
+def per_pathway_progress(cm: Connectome, start: Dict[str, float],
+                         targets: Dict[str, float] | None = None
+                         ) -> Dict[str, float]:
     out = {}
     for pid, pw in PATHWAYS.items():
         cur = cm.pathway_strength(pid)
         s = start.get(pid, cur)
-        d0 = abs(s - pw.target)
-        dn = abs(cur - pw.target)
+        goal = (targets or {}).get(pid, pw.target)
+        d0 = abs(s - goal)
+        dn = abs(cur - goal)
         out[pid] = 1.0 if d0 < 1e-9 else _clip(1.0 - dn / d0, -0.5, 1.0)
     return out

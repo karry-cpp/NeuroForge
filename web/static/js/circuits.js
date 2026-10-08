@@ -82,6 +82,27 @@ const TUBE_FRAG = /* glsl */`
 
 /* ========================================================================= */
 
+// The consolidated share of a connection, drawn as a solid core inside the
+// glowing tube. Glow = everything practised; core = what has set and resists
+// fading (the model's `c`). MODEL, like the tube itself.
+const CORE_FRAG = /* glsl */`
+  precision highp float;
+  varying vec3  vN;
+  varying vec3  vView;
+  uniform vec3  uColor;
+  uniform float uFocus;
+
+  void main() {
+    float ndv = abs(dot(normalize(vN), normalize(vView)));
+    vec3 col = uColor * (0.30 + 0.70 * ndv);
+    gl_FragColor = vec4(col, 0.92 * uFocus);
+  }
+`;
+
+const radiusFor = (w) => 0.45 + Math.pow(Math.max(0, w), 1.25) * 3.4;
+
+/* ========================================================================= */
+
 export class Circuits {
   constructor(viewer) {
     this.viewer = viewer;
@@ -90,10 +111,13 @@ export class Circuits {
     viewer.root.add(this.group, this.ghostGroup);
     this.edges = new Map();       // edgeId -> [{mesh, mat, side}]
     this.ghosts = new Map();
+    this.cores = new Map();       // edgeId -> [{mesh, mat}]
     this.pathwayColors = {};
     this.visible = false;
     this.showGhost = false;
     this._pulses = [];
+    this._spot = null;            // Set of edge ids shown outside Circuits mode
+    this._tween = null;
   }
 
   /* --------------------------------------------------------------- build */
@@ -154,6 +178,24 @@ export class Circuits {
         gmesh.renderOrder = 5;
         this.ghostGroup.add(gmesh);
         ghosts.push({ mesh: gmesh, mat: gmat, side });
+
+        const cmat = new THREE.ShaderMaterial({
+          uniforms: {
+            uColor:  { value: col.clone() },
+            uFocus:  { value: 1 },
+            uRadius: { value: 0.5 },
+          },
+          vertexShader: TUBE_VERT,
+          fragmentShader: CORE_FRAG,
+          transparent: true,
+          depthWrite: false,
+        });
+        const cmesh = new THREE.Mesh(geo, cmat);
+        cmesh.renderOrder = 5;
+        cmesh.visible = false;
+        this.group.add(cmesh);
+        (this.cores.get(e.id) || this.cores.set(e.id, []).get(e.id))
+          .push({ mesh: cmesh, mat: cmat });
       }
       this.edges.set(e.id, made);
       this.ghosts.set(e.id, ghosts);
@@ -268,8 +310,59 @@ export class Circuits {
   /* -------------------------------------------------------------- state */
   setVisible(on) {
     this.visible = on;
-    this.group.visible = on;
+    this.group.visible = on || !!this._spot;
     this.ghostGroup.visible = on && this.showGhost;
+  }
+
+  /**
+   * Show only these edges, even while the full network is hidden - the
+   * Simulation tabs draw parts, and bring in a connection only when it is
+   * the story (a logged experience, a part being inspected). Null restores.
+   */
+  spotlight(edgeIds) {
+    this._spot = edgeIds && edgeIds.length ? new Set(edgeIds) : null;
+    for (const [id, arr] of this.edges) {
+      const on = !this._spot || this._spot.has(id);
+      for (const { mesh, mat } of arr) {
+        mesh.visible = on;
+        mat.uniforms.uFocus.value = 1;
+      }
+    }
+    if (!this._spot) this.setCores(null);
+    this.group.visible = this.visible || !!this._spot;
+  }
+
+  /**
+   * Solid cores for the consolidated share of each spotlit edge, or null to
+   * hide them. `consolidation` is edgeId -> 0..1.
+   */
+  setCores(consolidation, weights = null) {
+    for (const [id, arr] of this.cores) {
+      const c = consolidation?.[id];
+      const on = consolidation && c > 0.02 && (!this._spot || this._spot.has(id));
+      for (const { mesh, mat } of arr) {
+        mesh.visible = !!on;
+        if (!on) continue;
+        const w = weights?.[id] ?? this.edges.get(id)[0].mat.uniforms.uStrength.value;
+        mat.uniforms.uRadius.value = Math.max(0.2, radiusFor(w) * 0.8 * c);
+      }
+    }
+  }
+
+  /** Ease every edge's thickness and brightness from `from` to `to`. */
+  animate(from, to, dur = 1.6) {
+    this._tween = { from, to, t: 0, dur };
+    this._apply(from);
+  }
+
+  _apply(weights) {
+    for (const [id, arr] of this.edges) {
+      const w = weights[id] ?? 0;
+      for (const { mat } of arr) {
+        mat.uniforms.uStrength.value = w;
+        mat.uniforms.uRadius.value = radiusFor(w);
+      }
+    }
   }
 
   setGhost(on) {
@@ -334,6 +427,19 @@ export class Circuits {
       for (const { mat } of arr) mat.uniforms.uTime.value = t;
     for (const arr of this.ghosts.values())
       for (const { mat } of arr) mat.uniforms.uTime.value = t;
+
+    if (this._tween) {
+      const tw = this._tween;
+      tw.t = Math.min(1, tw.t + dt / tw.dur);
+      const e = tw.t * tw.t * (3 - 2 * tw.t);
+      const mix = {};
+      for (const id of this.edges.keys()) {
+        const a = tw.from[id] ?? 0, b = tw.to[id] ?? a;
+        mix[id] = a + (b - a) * e;
+      }
+      this._apply(mix);
+      if (tw.t >= 1) this._tween = null;
+    }
 
     if (!this._pulses.length) return;
     const alive = [];

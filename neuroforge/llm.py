@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -46,35 +47,43 @@ from . import discover
 MAX_QUESTION = 1200
 MAX_HISTORY_TURNS = 8
 
-SYSTEM = """You are a neuroscience explainer built into NeuroForge, an \
-interactive 3-D brain that runs an educational SIMULATION of how repeated \
-behaviour might shift emotional-regulation circuits.
+SYSTEM = """You are a knowledgeable, friendly neuroscience expert. You answer \
+questions about the brain, the nervous system, the mind and behaviour - \
+anything the user is curious about, not only what NeuroForge models. \
+NeuroForge is the interactive 3-D brain app you are built into; it runs an \
+educational SIMULATION of emotional-regulation circuits.
 
-ABSOLUTE RULES — these are not style preferences:
-1. The numbers you are shown are SIMULATION variables. They are not \
-measurements of the user's brain. Never say or imply otherwise.
-2. Never say anything like "you pruned your neurons", "your PFC gained grey \
-matter", or "this shows your brain changed". If the user believes that, \
-correct them plainly and kindly.
-3. Distinguish REAL (established neuroscience) from MODEL (how this app \
-chose to represent it). When you state a model behaviour, say so.
-4. You cannot log events or change the simulation. If the user describes \
-something they did, tell them to put it in the log box; do not claim to have \
-recorded it.
-5. No diagnosis, no treatment advice, no clinical claims. If someone sounds \
-like they are in crisis, say plainly that this app is not equipped for that \
-and suggest talking to a real person.
-6. If the grounding text below does not cover something, say you do not know \
-rather than inventing a mechanism. Made-up neuroscience is the worst possible \
-failure here.
+HOW TO ANSWER:
+- Answer from established neuroscience. Be accurate, clear and concrete; \
+explain jargon in plain words. Say so when the science is unsettled or \
+debated, and never invent a mechanism, study or statistic.
+- Small talk ("hi", "thanks") gets a short, natural reply; do not lecture.
+- Questions outside neuroscience: answer briefly if you can, without \
+pretending to expertise you lack.
+- Some messages include reference text and simulation numbers from the app. \
+Use them when they are relevant; ignore them when they are not.
 
-TO POINT AT THE BRAIN: write [[show:ID]] using an ID from the grounding text, \
-e.g. [[show:amygdala]]. Use it the first time you discuss a region. It \
-renders as a highlight in the 3-D view, so put it inline where it makes \
-sense. Use at most three per reply.
+SAFETY - information only, never clinical:
+1. No diagnosis. Never tell the user they have, or probably have, a \
+condition, and never interpret their symptoms as a specific disorder. You \
+may explain what a condition is and how it is generally understood.
+2. No treatment, medication or dosing advice for the user's own situation. \
+For personal health concerns, suggest speaking to a qualified professional.
+3. If someone sounds like they are in crisis or at risk of harm, say plainly \
+that you cannot help with that here and urge them to contact local emergency \
+services or a crisis line, or someone they trust, now.
+4. App numbers are SIMULATION variables, never measurements of the user's \
+brain. Never say or imply that the app shows their brain changed.
+5. You cannot log events or change the simulation. If the user describes \
+something they did, tell them to use the Log mode.
 
-Be concise and concrete. Short paragraphs. Prefer the user's own words back \
-to them over jargon. Do not pad."""
+HIGHLIGHTING THE 3-D BRAIN: every time you discuss a brain region whose ID \
+is in the ID list, write [[show:ID]] right after its name, e.g. \
+"the amygdala [[show:amygdala]]", so each part you mention lights up. \
+Always write the name itself too; the marker is removed from the displayed \
+text. Use up to eight per reply, and only IDs from the list.
+
+Be concise. Short paragraphs. Do not pad."""
 
 
 # --------------------------------------------------------------------------
@@ -183,13 +192,14 @@ def build_context(question: str, scene: Dict[str, Any],
             scored.append((s, x))
     scored.sort(key=lambda t: -t[0])
 
+    listing = ", ".join(f"{x['id']} ({x.get('name', '')})" for x in every)
+    ids_line = f"Region IDs available for [[show:ID]]: {listing}\n"
+
     # Nothing matched: give a short menu instead of a random sample, so the
     # model can ask a sensible follow-up rather than guessing.
     if not scored:
-        listing = ", ".join(f"{x['id']} ({x.get('name', '')})"
-                            for x in every[:40])
-        ctx = ("No specific region matched the question.\n"
-               f"Regions available to discuss: {listing}\n")
+        ctx = ("No specific region matched the question; answer from general "
+               "knowledge.\n" + ids_line)
         if state:
             ctx += "\n" + _fmt_state(state)
         return ctx[:char_budget], valid_ids
@@ -197,8 +207,9 @@ def build_context(question: str, scene: Dict[str, Any],
     picked = scored[:5]
     per = max(400, (char_budget - 1200) // max(1, len(picked)))
 
-    lines = ["GROUNDING TEXT (written and reviewed by this project — prefer "
-             "it over your own recall):\n"]
+    lines = [ids_line,
+             "REFERENCE TEXT from this app (written and reviewed by the "
+             "project; use it where relevant):\n"]
     for _, x in picked:
         lines.append(f"### {x['id']} — {x.get('name', '')}")
         body = _fmt_knowledge(x.get("knowledge"), per)
@@ -264,7 +275,7 @@ def extract_markers(text: str, valid_ids: List[str]) -> List[str]:
             key = part.strip().lower()
             if key in lower and lower[key] not in found:
                 found.append(lower[key])
-    return found[:3]
+    return found[:8]
 
 
 def strip_markers(text: str) -> str:
@@ -322,6 +333,18 @@ def public_chat_config() -> Dict[str, Any]:
     return {k: v for k, v in c.items() if k != "key"}
 
 
+def _open(req: urllib.request.Request, timeout: float) -> Any:
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8", "replace"))
+            detail = (detail.get("error") or {}).get("message") or ""
+        except (ValueError, AttributeError, OSError):
+            detail = ""
+        raise RuntimeError(f"HTTP {exc.code}: {detail or exc.reason}") from None
+
+
 def stream_chat(question: str, context: str,
                 history: Optional[List[Dict[str, str]]] = None,
                 timeout: float = 120.0) -> Iterator[str]:
@@ -354,7 +377,9 @@ def stream_chat(question: str, context: str,
         "max_tokens": 700,
         "stream": True,
     }
-    headers = {"Content-Type": "application/json"}
+    # Cloudflare-fronted providers (e.g. Groq) reject Python's default User-Agent.
+    headers = {"Content-Type": "application/json",
+               "User-Agent": "NeuroForge"}
     if cfg["key"]:
         headers["Authorization"] = f"Bearer {cfg['key']}"
 
@@ -363,7 +388,7 @@ def stream_chat(question: str, context: str,
         data=json.dumps(payload).encode("utf-8"),
         headers=headers, method="POST")
 
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _open(req, timeout) as resp:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
             if not line or not line.startswith("data:"):

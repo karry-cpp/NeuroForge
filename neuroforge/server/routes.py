@@ -35,7 +35,7 @@ from ..anatomy.anchors import (ANCHORS, NODE_TO_CORTEX, NODE_TO_STRUCTURE,
                                anchor_table)
 from ..analyse import analyse
 from ..atlas import EDGES, EXCLUSIONS, PATHWAYS, REGIONS
-from ..engagement import engagement, logged_sources
+from ..engagement import effects, engagement, logged_sources, trend
 from ..engine import Simulation
 from ..events import CATEGORIES, EVENT_TYPES
 from ..interpret import interpret, llm_config
@@ -74,6 +74,39 @@ def guarded(fn):
             return fn(payload)
     return wrapper
 SAVE_DIR = os.path.join(os.path.expanduser("~"), ".neuroforge")
+AUTOSAVE = os.path.join(SAVE_DIR, "autosave.json")
+
+
+def _autosave_on() -> bool:
+    return os.environ.get("NEUROFORGE_AUTOSAVE", "1") != "0"
+
+
+def _persist() -> None:
+    """Write the session after every change, so a restart loses nothing.
+
+    Written to a temporary file and swapped in, so a crash mid-write cannot
+    leave a half-written save that fails to load next time.
+    """
+    if not _autosave_on():
+        return
+    tmp = AUTOSAVE + ".tmp"
+    try:
+        SIM.save(tmp)
+        os.replace(tmp, AUTOSAVE)
+    except OSError:
+        pass
+
+
+def _restore() -> Simulation:
+    if _autosave_on() and os.path.exists(AUTOSAVE):
+        try:
+            return Simulation.load(AUTOSAVE)
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return Simulation()
+
+
+SIM = _restore()
 
 
 # ==========================================================================
@@ -142,9 +175,28 @@ def _engagement(sim: Simulation, weights: Dict[str, float],
     why = [dict(s, events={k: v * weeks for k, v in s["events"].items()})
            for s in srcs]
     why += logged_sources([e for e in sim.log if e.day <= day])
+    start = reactions.profile_rates(prof.get("answers", {}),
+                                    reactions.notes_of(prof))
+    # "Rarely ..." reasons read today's habits, so logging a practice
+    # retires the claim that you rarely do it.
     return engagement(weights, sim.warmup_days + day, sim.warmup_days, why,
-                      reactions.profile_rates(prof.get("answers", {}),
-                                              reactions.notes_of(prof)))
+                      reactions.habit_rates(start, sim.log, day))
+
+
+def _target_engagement(sim: Simulation) -> List[Dict[str, Any]]:
+    """How the user's target brain compares with the typical one.
+
+    No 'rarely ...' reasons here: an aim nobody mentioned is not a wish to
+    do less of it.
+    """
+    if not sim.target_weights:
+        return []
+    tp = sim.target_profile or {}
+    weeks = tp.get("weeks", reactions.WEEKS)
+    srcs = reactions.sources(tp.get("answers", {}), reactions.notes_of(tp))
+    why = [dict(s, events={k: v * weeks for k, v in s["events"].items()})
+           for s in srcs]
+    return engagement(sim.target_weights, weeks * 7, weeks * 7, why)
 
 
 def _state(sim: Simulation, weights: Dict[str, float] | None = None,
@@ -158,14 +210,30 @@ def _state(sim: Simulation, weights: Dict[str, float] | None = None,
         "live": day is None,
         "weights": w,
         "engagement": _engagement(sim, w, d),
+        "engagement_trend": (trend(sim.history, sim.warmup_days, d)
+                             if sim.profile else None),
+        "habits": reactions.habits(sim.profile, sim.target_profile,
+                                   sim.log, d),
         "profile": sim.profile,
+        "note_effects": [effects(n.get("events") or {})
+                         for n in reactions.notes_of(sim.profile)],
+        "goal_effects": [effects(n.get("events") or {})
+                         for n in reactions.notes_of(sim.target_profile)],
+        "target_engagement": _target_engagement(sim),
+        "target_profile": sim.target_profile,
+        "overnight": sim.last_overnight if day is None else None,
         "consolidation": {f"{c.spec.src}->{c.spec.dst}": round(c.c, 4)
                           for c in sim.current.conns},
-        "targets": {f"{c.spec.src}->{c.spec.dst}": c.target
-                    for c in sim.current.conns},
+        "targets": ({f"{c.spec.src}->{c.spec.dst}": round(c.w, 4)
+                     for c in sim.target.conns} if sim.target_weights else
+                    {f"{c.spec.src}->{c.spec.dst}": c.target
+                     for c in sim.current.conns}),
         "pathways": {k: round(v, 4)
                      for k, v in sim.current.pathway_profile().items()},
-        "pathway_targets": {p.id: p.target for p in PATHWAYS.values()},
+        "pathway_targets": ({k: round(v, 4) for k, v in
+                             sim.target.pathway_profile().items()}
+                            if sim.target_weights else
+                            {p.id: p.target for p in PATHWAYS.values()}),
         "pathway_progress": {k: round(v, 4)
                              for k, v in sim.pathway_progress().items()},
         "alignment": round(sim.alignment, 4),
@@ -228,6 +296,7 @@ def _log(payload: Dict[str, Any]) -> Dict[str, Any]:
         "percent": round((after[pid] - before[pid]) * 100, 2),
     } for pid in after if abs(after[pid] - before[pid]) > 1e-5]
     deltas.sort(key=lambda d: -abs(d["delta"]))
+    _persist()
 
     return {
         "state": _state(SIM),
@@ -289,6 +358,7 @@ def _analyse(payload: Dict[str, Any]) -> Dict[str, Any]:
 @guarded
 def _advance(payload: Dict[str, Any]) -> Dict[str, Any]:
     SIM.advance_day(int(payload.get("days", 1)))
+    _persist()
     return _state(SIM)
 
 
@@ -304,11 +374,16 @@ def _replay(payload: Dict[str, Any]) -> Dict[str, Any]:
 @guarded
 def _reset(payload: Dict[str, Any]) -> Dict[str, Any]:
     global SIM
-    # Starting over clears what was logged, not who the user described -
-    # unless they ask for the answers to go too.
-    prof = None if payload.get("clear_profile") else SIM.profile
+    # Starting over clears what was logged, not who the user described or
+    # wants to become - unless they ask for all of it to go.
+    clear = bool(payload.get("clear_profile"))
+    prof = None if clear else SIM.profile
+    tw, tp = (None, None) if clear else (SIM.target_weights,
+                                         SIM.target_profile)
     SIM = (reactions.build(prof.get("answers", {}), reactions.notes_of(prof))
            if prof else Simulation())
+    SIM.set_target(tw, tp)
+    _persist()
     return _state(SIM)
 
 
@@ -319,6 +394,7 @@ def _demo(payload: Dict[str, Any]) -> Dict[str, Any]:
     SIM = Simulation()
     SIM.simulate_scripted(weeks=int(payload.get("weeks", 12)),
                           adherence=float(payload.get("adherence", 0.72)))
+    _persist()
     return _state(SIM)
 
 
@@ -341,6 +417,7 @@ def _load(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not os.path.exists(path):
         return {"error": "no such save", "path": path}
     SIM = Simulation.load(path)
+    _persist()
     return _state(SIM)
 
 
@@ -366,9 +443,13 @@ def _read_pattern(text: str, allow_llm: bool) -> tuple:
 
 
 def _rebuild(answers: Dict[str, str], notes: List[Dict[str, Any]]) -> None:
-    """New starting point from the description, keeping everything logged."""
+    """New starting point from the description, keeping everything logged
+    and the target."""
     global SIM
-    SIM = reactions.build(answers, notes, log=list(SIM.log), day=SIM.day)
+    old = SIM
+    SIM = reactions.build(answers, notes, log=list(old.log), day=old.day)
+    SIM.set_target(old.target_weights, old.target_profile)
+    _persist()
 
 
 @API.post("/api/profile")
@@ -382,7 +463,7 @@ def _profile(payload: Dict[str, Any]) -> Dict[str, Any]:
     answers = payload.get("answers") or {}
     if not isinstance(answers, dict):
         answers = {}
-    text = str(payload.get("text", ""))[:400]
+    text = str(payload.get("text", ""))[:reactions.MAX_TEXT]
     note, read, source = (None, [], "")
     if text.strip():
         note, read, source = _read_pattern(
@@ -398,7 +479,7 @@ def _profile(payload: Dict[str, Any]) -> Dict[str, Any]:
 @API.post("/api/profile/note")
 def _add_note(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Add one described pattern and refine the starting point with it."""
-    text = str(payload.get("text", "")).strip()[:400]
+    text = str(payload.get("text", "")).strip()[:reactions.MAX_TEXT]
     if not text:
         return {"added": False, "reason": "Nothing to add."}
     note, read, source = _read_pattern(
@@ -432,6 +513,121 @@ def _delete_note(payload: Dict[str, Any]) -> Dict[str, Any]:
     if SIM.profile and 0 <= i < len(notes):
         notes.pop(i)
         _rebuild(SIM.profile.get("answers", {}), notes)
+    return {"state": _state(SIM)}
+
+
+@API.post("/api/profile/note/edit")
+@guarded
+def _edit_note(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Correct how a described pattern was read. The user picks the events;
+    the rules still decide what those do."""
+    notes = reactions.notes_of(SIM.profile)
+    i = int(payload.get("index", -1))
+    if not (SIM.profile and 0 <= i < len(notes)):
+        return {"ok": False, "reason": "No such pattern."}
+    note = reactions.reread(notes[i], [str(e) for e in
+                                       payload.get("events") or []])
+    if not note:
+        return {"ok": False, "reason": "Pick at least one, or remove it."}
+    notes[i] = note
+    _rebuild(SIM.profile.get("answers", {}), notes)
+    return {"ok": True, "state": _state(SIM)}
+
+
+# --------------------------------------------------------------------------
+# Who you want to become
+# --------------------------------------------------------------------------
+
+def _no_match(source: str) -> str:
+    reason = ("Could not match that to anything the model knows about. Try "
+              "describing what you do or want to do - e.g. 'I want to pause "
+              "before I answer'.")
+    if source == "keyword":
+        reason += (" No language model is running, so only simple keywords "
+                   "were checked - start LM Studio for a proper reading.")
+    return reason
+
+
+def _retarget(answers: Dict[str, Any], notes: List[Dict[str, Any]]) -> None:
+    weights, profile = reactions.build_target(answers, notes)
+    SIM.set_target(weights, profile)
+    _persist()
+
+
+@API.post("/api/target")
+def _target(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Set how the user wants to react (and optionally add an aim)."""
+    answers = payload.get("answers") or {}
+    if not isinstance(answers, dict):
+        answers = {}
+    text = str(payload.get("text", ""))[:reactions.MAX_TEXT]
+    note, read, source = (None, [], "")
+    if text.strip():
+        note, read, source = _read_pattern(
+            text, bool(payload.get("allow_llm", True)))
+    with STATE_LOCK:
+        notes = reactions.notes_of(SIM.target_profile)
+        if note:
+            notes.append(note)
+        _retarget(answers, notes)
+        return {"state": _state(SIM), "read_as": read, "source": source}
+
+
+@API.post("/api/target/goal")
+def _add_goal(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Add one aim - 'I want to ...' - and rebuild the target with it."""
+    text = str(payload.get("text", "")).strip()[:reactions.MAX_TEXT]
+    if not text:
+        return {"added": False, "reason": "Nothing to add."}
+    note, read, source = _read_pattern(
+        text, bool(payload.get("allow_llm", True)))
+    with STATE_LOCK:
+        if not note:
+            return {"added": False, "source": source,
+                    "reason": _no_match(source)}
+        notes = reactions.notes_of(SIM.target_profile)
+        if len(notes) >= reactions.MAX_NOTES:
+            return {"added": False,
+                    "reason": f"Up to {reactions.MAX_NOTES} aims; remove "
+                              "one first."}
+        notes.append(note)
+        _retarget((SIM.target_profile or {}).get("answers", {}), notes)
+        return {"added": True, "state": _state(SIM), "read_as": read,
+                "source": source}
+
+
+@API.post("/api/target/goal/delete")
+@guarded
+def _delete_goal(payload: Dict[str, Any]) -> Dict[str, Any]:
+    notes = reactions.notes_of(SIM.target_profile)
+    i = int(payload.get("index", -1))
+    if SIM.target_profile and 0 <= i < len(notes):
+        notes.pop(i)
+        _retarget(SIM.target_profile.get("answers", {}), notes)
+    return {"state": _state(SIM)}
+
+
+@API.post("/api/target/goal/edit")
+@guarded
+def _edit_goal(payload: Dict[str, Any]) -> Dict[str, Any]:
+    notes = reactions.notes_of(SIM.target_profile)
+    i = int(payload.get("index", -1))
+    if not (SIM.target_profile and 0 <= i < len(notes)):
+        return {"ok": False, "reason": "No such aim."}
+    note = reactions.reread(notes[i], [str(e) for e in
+                                       payload.get("events") or []])
+    if not note:
+        return {"ok": False, "reason": "Pick at least one, or remove it."}
+    notes[i] = note
+    _retarget(SIM.target_profile.get("answers", {}), notes)
+    return {"ok": True, "state": _state(SIM)}
+
+
+@API.post("/api/target/clear")
+@guarded
+def _clear_target(_: Dict[str, Any]) -> Dict[str, Any]:
+    SIM.set_target(None, None)
+    _persist()
     return {"state": _state(SIM)}
 
 

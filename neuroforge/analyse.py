@@ -80,8 +80,10 @@ def targets_for(event_ids: List[str]) -> Dict[str, Any]:
 
     order = sorted(engaged.items(), key=lambda kv: -abs(kv[1]))
     pathways: List[Dict[str, Any]] = []
-    regions: List[str] = []
-    structures: List[str] = []
+    regions: List[str] = [p for e in events for p in e.parts
+                          if p in CORTICAL_BY_ID]
+    structures: List[str] = [p for e in events for p in e.parts
+                             if p in STRUCTURES_BY_ID]
     edge_keys: List[str] = []
 
     for pid, amount in order:
@@ -119,7 +121,31 @@ def targets_for(event_ids: List[str]) -> Dict[str, Any]:
         "regions": regions,
         "structures": structures,
         "edges": edge_keys,
+        "levels": _levels(pathways, events),
     }
+
+
+# How involved a part the rules do not reach is, against the busiest part.
+UNMODELLED_LEVEL = 0.5
+ADDED_LEVEL = 0.25
+
+
+def _levels(pathways: List[Dict[str, Any]],
+            events: List[Any]) -> Dict[str, float]:
+    """0..1 per part: summed |engagement| of the pathways through it, over
+    the busiest part. Drives how strongly each part glows."""
+    raw: Dict[str, float] = {}
+    for p in pathways:
+        for n in _nodes_for(p["id"]):
+            part = NODE_TO_CORTEX.get(n) or NODE_TO_STRUCTURE.get(n)
+            if part:
+                raw[part] = raw.get(part, 0.0) + abs(p["amount"])
+    top = max(raw.values(), default=0.0)
+    out = {k: round(v / top, 3) for k, v in raw.items()} if top else {}
+    for e in events:
+        for part in e.parts:
+            out.setdefault(part, UNMODELLED_LEVEL)
+    return out
 
 
 def _modulators(events: List[Any]) -> List[Dict[str, Any]]:
@@ -232,6 +258,23 @@ what they described. Plain language: "keeps flagging it as a threat", not \
 - Do not quote the numbers in the brief; they are rule settings, not findings.
 - These are simulation variables, not measurements of the reader. Never write \
 that their neurons, synapses or grey matter changed.
+- Say what the app's rules link this kind of moment to ("in this model", \
+"tends to", "the rules tie this to"), not what happened inside them. Never \
+say a part was weaker or stronger in them, and never claim what they knew, \
+remembered or meant beyond their own words.
+- Brain parts belong to the model, not to the reader: write "in this model \
+the amygdala treats being ignored as a threat", never "your amygdala stayed \
+active" or "your brain flagged it".
+- Never judge the reaction: not how big it should have been, whether it was \
+justified, or whether it succeeded.
+- Add no facts that are not in the entry.
+
+EXAMPLE of the right voice (different entry):
+"In this model, being snapped at is read as a threat, which the rules route \
+through the amygdala. Going over it afterwards is what the rules call \
+rumination: the ACC keeps signalling that something is wrong, and each pass \
+makes that loop a little easier to fall into. The vlPFC is the part these \
+rules use to name a feeling and take some heat out of it."
 - Second person, calm and plain. No hype, no diagnosis, no advice.
 - Ordinary sentence capitalisation.
 - 4 to 6 sentences. No headings, no bullet points, no markdown.
@@ -290,7 +333,7 @@ def _named_parts(reply: str, candidates: List[str]) -> List[str]:
 
 def _brief(text: str, targets: Dict[str, Any],
            extra: Optional[List[str]] = None) -> str:
-    lines = [f'ENTRY: "{text.strip()[:400]}"', ""]
+    lines = [f'ENTRY: "{text.strip()[:1200]}"', ""]
     if targets["events"]:
         lines.append("RECOGNISED AS:")
         for e in targets["events"]:
@@ -454,6 +497,9 @@ def analyse(text: str, event_ids: List[str],
                                           if p in CORTICAL_BY_ID]
     out["structures"] = targets["structures"] + [p for p in added
                                                 if p not in CORTICAL_BY_ID]
+    # With no rule behind anything, the parts the model picked are all there is.
+    lvl = ADDED_LEVEL if targets["levels"] else 1.0
+    out["levels"] = {**{p: lvl for p in added}, **targets["levels"]}
     named = ruled + added
     out["text"] = _sentence_case(reply, named + [_token(p) for p in named])
     out["source"] = "model"

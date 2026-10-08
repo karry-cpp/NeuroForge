@@ -163,7 +163,7 @@ A model is used in two places: a chat panel that explains what you are looking
 at and can highlight regions while it answers, and the interpreter that reads
 a logged experience and works out which event it describes.
 
-There is no account and no API key. If LM Studio or Ollama is already running,
+For local models, there is no account and no API key. If LM Studio or Ollama is already running,
 NeuroForge finds it on its usual port and uses it &mdash; starting one of them
 is the entire setup.
 
@@ -184,6 +184,15 @@ $env:NEUROFORGE_LLM_BASE  = "http://127.0.0.1:8080/v1"
 $env:NEUROFORGE_LLM_MODEL = "your-model"
 $env:NEUROFORGE_LLM_KEY   = "..."     # hosted providers only
 ```
+
+For OpenRouter chat, uncomment and fill in the three `NEUROFORGE_CHAT_*`
+lines in the project-root `.env` file. Create a key at
+<https://openrouter.ai/settings/keys> and select a currently available
+model ending in `:free` at <https://openrouter.ai/models?max_price=0>.
+Restart `python -m neuroforge` after editing the file. The `.env` file is
+ignored by Git; existing shell environment variables take precedence. Keep
+the key private. Journal interpretation uses separate `NEUROFORGE_LLM_*`
+settings and is not enabled by the chat-only `.env` example.
 
 To skip the check altogether and stay on the offline path, set
 `$env:NEUROFORGE_LLM = "off"` instead.

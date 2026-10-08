@@ -38,6 +38,9 @@ class EventType:
     rule: str = ""                     # human-readable rule
     science: str = ""                  # what is actually known
     caveat: str = ""                   # what we are NOT claiming
+    # Parts it involves that no modelled connection reaches: shown, never
+    # simulated.
+    parts: tuple = ()
 
 
 def _e(*a, **k) -> EventType:
@@ -228,6 +231,19 @@ EVENT_TYPES: List[EventType] = [
        rule="stress −0.20",
        science="Social support and recovery time buffer stress responses.",
        caveat=""),
+
+    _e("social_hurt", "Felt hurt, left out or rejected", "State", "💔",
+       {"threat": 0.45, "rumination": 0.30, "regulation": -0.10},
+       stress_delta=0.12,
+       rule="threat +0.45 · rumination +0.30 · regulation −0.10",
+       science="Being excluded or ignored is processed as a social threat. "
+               "In exclusion experiments it engages the dorsal ACC and "
+               "anterior insula, and rejection is a common trigger for "
+               "going over what happened afterwards.",
+       caveat="Whether social pain shares circuitry with physical pain is "
+              "still debated. The insula has no connection in this model, "
+              "so it is shown but nothing about it is simulated.",
+       parts=("aINS", "dACC")),
 ]
 
 EVENTS_BY_ID: Dict[str, EventType] = {e.id: e for e in EVENT_TYPES}

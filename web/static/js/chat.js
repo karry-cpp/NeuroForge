@@ -18,9 +18,10 @@
 const $ = (s) => document.querySelector(s);
 
 export class Chat {
-  constructor({ onShow, onLog }) {
+  constructor({ onShow, onLog, onClose }) {
     this.onShow = onShow;      // (ids)   -> highlight regions in the 3-D view
     this.onLog = onLog;        // (id, intensity, note) -> apply an event
+    this.onClose = onClose;
     this.history = [];         // verbatim turns only; never a summary
     this.busy = false;
     this.mode = 'ask';
@@ -87,6 +88,7 @@ export class Chat {
   close() {
     this.el.root.classList.add('hidden');
     document.body.classList.remove('chat-open');
+    this.onClose?.();
   }
 
   isOpen() { return !this.el.root.classList.contains('hidden'); }
@@ -144,6 +146,7 @@ export class Chat {
     this.setBusy(true);
     const bubble = this.add('bot', '<span class="cursor"></span>');
     let acc = '';
+    const shown = [];
 
     try {
       const res = await fetch('/api/chat', {
@@ -178,7 +181,9 @@ export class Chat {
             bubble.innerHTML = render(acc) + '<span class="cursor"></span>';
             this.scroll();
           } else if (event === 'show') {
-            this.onShow?.(data.ids);
+            // The server sends one id per event; keep earlier parts of this answer lit.
+            for (const id of data.ids || []) if (!shown.includes(id)) shown.push(id);
+            this.onShow?.([...shown]);
           } else if (event === 'error') {
             bubble.innerHTML = `<span class="err">${escape(data.message)}</span>`;
           } else if (event === 'done') {

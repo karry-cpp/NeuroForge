@@ -106,6 +106,8 @@ const CORTEX_FRAG = /* glsl */`
   uniform float uTrueColor;     // 1 = selected parts show their swatch colour, not a tissue tint
   uniform sampler2D uRegionTex; // RGB = region colour, A = live glow
   uniform sampler2D uSelTex;    // R = selected, G = selected but faint (another part has focus)
+  uniform float uFaintGhost;    // 1 = faint parts go see-through too, keeping only a trace of colour
+  uniform float uStrongGlow;    // 1 = glow is strong enough to read as a level, in the part's own colour
   uniform sampler2D uNetTex;    // RGB = Yeo network colour
   uniform float uNetMode;       // 1 = colour cortex by network, not by region
   uniform float uNetActive;     // highlighted network (-1 = none)
@@ -136,6 +138,7 @@ const CORTEX_FRAG = /* glsl */`
       : reg.a;
     bool isActive = netMode ? (vNetOn > 0.5) : (vSel > 0.5);
     bool faint = isActive && !netMode && vSelFaint > 0.5;
+    bool faintGhost = faint && uFaintGhost > 0.5;
     // Same rate as the selected-structure pulse, so the two breathe together.
     float breath = 0.5 + 0.5 * sin(uTime * 3.4);
 
@@ -146,8 +149,9 @@ const CORTEX_FRAG = /* glsl */`
     // the far side's copy of it showed through as a wash of its own colour.
     bool selLayer = uSelLayer > 0.5;
     bool focusing = uDim > 0.5;
-    if (selLayer && !isActive) discard;
-    if (!selLayer && isActive && focusing) discard;
+    // A see-through faint part is drawn with the shell, not the opaque pass.
+    if (selLayer && (!isActive || faintGhost)) discard;
+    if (!selLayer && isActive && !faintGhost && focusing) discard;
 
     // Anything that is not the selection is about to be ghosted, and it must
     // give up its live simulation glow first. The glow feeds a fresnel term
@@ -209,6 +213,23 @@ const CORTEX_FRAG = /* glsl */`
     // Lighting and tone mapping mute a tinted surface; lean it back toward
     // the flat swatch colour while keeping enough shading to read as tissue.
     if (trueCol) lit = mix(lit, rc * (0.50 + 0.40 * wrap), 0.78);
+    // Self-illumination in the part's own colour, mirroring the structures'
+    // emissive. Left unclamped so the bloom pass radiates it as a halo.
+    if (isActive && !faint) {
+      float eg = uStrongGlow > 0.5 ? glow : max(glow, 0.8);
+      // 0.6: the swatch pull above already lights cortex brighter than a structure's diffuse.
+      lit += rc * (0.38 + 0.6 * eg) * uHighlight * 0.6;
+    }
+    // After the swatch pull, or the flattening would swallow it. More
+    // involved = a deeper, richer shade of its own colour, haloed at the edges.
+    if (uStrongGlow > 0.5 && isActive && !faint) {
+      float k = clamp((glow - 0.12) / 0.6, 0.0, 1.0);
+      vec3 deep = rc * (1.0 - 0.45 * k);
+      float dl = dot(deep, vec3(0.299, 0.587, 0.114));
+      deep = max(mix(vec3(dl), deep, 1.0 + 0.5 * k), 0.0);
+      lit = mix(lit, deep * (0.75 + 0.35 * wrap), 0.3 + 0.5 * k);
+      lit += rc * glow * fres * 1.4;
+    }
     if (faint) lit *= 0.62;
 
     // ---- opacity ---------------------------------------------------------
@@ -223,7 +244,7 @@ const CORTEX_FRAG = /* glsl */`
     // crown grazes the view direction somewhere, so the "outline" picked out
     // all of them at once and read as a wire mesh draped over the brain.
     // There is no exponent that fixes it - the detail is in the geometry.
-    float ghost = uDim * (isActive ? 0.0 : 1.0);
+    float ghost = uDim * ((isActive && !faintGhost) ? 0.0 : 1.0);
     if (ghost > 0.0) {
       float lum = dot(lit, vec3(0.299, 0.587, 0.114));
       vec3 g = mix(vec3(lum), uRimColor, 0.22) * (0.30 * uGhostAlpha);
@@ -241,6 +262,11 @@ const CORTEX_FRAG = /* glsl */`
       if (!gl_FrontFacing) shell *= 0.45;
       float clear = mix(1.0, clamp(shell, 0.0, 1.0), uGhostFade);
       a = mix(a, a * clear, ghost);
+      // Still findable: a trace of its own colour, a little less clear.
+      if (faintGhost) {
+        lit = mix(lit, rc * 0.5, 0.28);
+        a = max(a, 0.09);
+      }
       // Throwing the invisible fragments away entirely is what makes this
       // work: a fragment that is kept would still write depth and would
       // quietly occlude the structures we are trying to reveal.
@@ -261,8 +287,12 @@ const CORTEX_FRAG = /* glsl */`
 
 /* ------------------------------------------------------------------ colours */
 
+const _hsl = { h: 0, s: 0, l: 0 };
+const _deep = new THREE.Color();
+
+
 const REGION_COLORS = {
-  0: 0x000000, 1: 0x22d3ee, 2: 0x8b5cf6, 3: 0x3b82f6, 4: 0x1d4ed8,
+  0: 0x000000, 1: 0x22d3ee, 2: 0x8468c0, 3: 0x3b82f6, 4: 0x1d4ed8,
   5: 0xfbbf24, 6: 0xf59e0b, 7: 0xa3a3a3, 8: 0x94a3b8, 9: 0xa8a29e,
   10: 0x78716c,
   // Self-referential regions, given their own colours so they stop being
@@ -304,8 +334,9 @@ const NETWORK_COLORS = [
 /* ========================================================================= */
 
 export class Viewer {
-  constructor(canvas) {
+  constructor(canvas, opts = {}) {
     this.canvas = canvas;
+    this.pinLayer = opts.pinLayer || document.getElementById('pinLayer');
     this.clock = new THREE.Clock();
     this.mode = 'anatomy';
     this.selected = null;       // { kind:'cortex'|'structure', id }
@@ -332,20 +363,28 @@ export class Viewer {
   }
 
   /* ---------------------------------------------------------- renderer */
+  // Sized from the canvas, not the window: in Compare two viewers share it.
+  _dims() {
+    const r = this.canvas.getBoundingClientRect();
+    return [r.width || innerWidth, r.height || innerHeight];
+  }
+
   _initRenderer() {
+    const [w, h] = this._dims();
     const r = new THREE.WebGLRenderer({
       canvas: this.canvas, antialias: true, alpha: false,
       powerPreference: 'high-performance', stencil: false,
     });
     r.setPixelRatio(Math.min(devicePixelRatio, 2));
-    r.setSize(innerWidth, innerHeight);
+    r.setSize(w, h, false);
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.toneMappingExposure = 1.0;
     r.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer = r;
 
-    this.camera = new THREE.PerspectiveCamera(
-      36, innerWidth / innerHeight, 1, 4000);
+    this.camera = new THREE.PerspectiveCamera(36, w / h, 1, 4000);
+    this.camera.zoom = Math.min(1, (w / h) / 1.1);
+    this.camera.updateProjectionMatrix();
     this.camera.position.set(300, 90, 190);
 
     this.composer = new EffectComposer(r);
@@ -355,7 +394,7 @@ export class Viewer {
     // highlights (an active region, a firing pathway), never the whole
     // specimen. Heavy bloom is what made the surface look like plastic.
     this.bloom = new UnrealBloomPass(
-      new THREE.Vector2(innerWidth, innerHeight), 0.24, 0.62, 0.88);
+      new THREE.Vector2(w, h), 0.24, 0.62, 0.88);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
   }
@@ -478,8 +517,9 @@ export class Viewer {
   }
 
   _pick(e) {
-    this.pointer.x = (e.clientX / innerWidth) * 2 - 1;
-    this.pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this.ray.setFromCamera(this.pointer, this.camera);
 
     // Pathways take priority over everything when they are on screen. They
@@ -587,11 +627,14 @@ export class Viewer {
       uSelLayer: { value: 0.0 },
       uGhostAlpha: { value: 1.0 },
       uHighlight: { value: 1.0 },
-      uTrueColor: { value: 0.0 },
+      // Every view names parts by their sidebar swatch, so selections show that colour.
+      uTrueColor: { value: 1.0 },
       uKeyDir: { value: this.keyDir },
       uRimColor: { value: new THREE.Color(0x8fa6bd) },
       uRegionTex: { value: this.regionTex },
       uSelTex:    { value: this.selTex },
+      uFaintGhost: { value: 0.0 },
+      uStrongGlow: { value: 0.0 },
       uNetTex:    { value: this.networkTex },
       uNetMode:   { value: 0.0 },
       uNetActive: { value: -1.0 },
@@ -715,7 +758,7 @@ export class Viewer {
 
   /* -------------------------------------------------------------- pins */
   _buildPins() {
-    const layer = document.getElementById('pinLayer');
+    const layer = this.pinLayer;
     layer.innerHTML = '';
     for (const s of this.sceneData.structures) {
       const el = document.createElement('div');
@@ -766,6 +809,7 @@ export class Viewer {
     const v = new THREE.Vector3();
     const camPos = this.camera.position;
     const only = this._pinFilter;
+    const [W, H] = this._dims();
     for (const [id, pin] of this.pins) {
       const shown = pin.cortex
         ? !!only?.has(id) && (this.hemi === 'L' ? !!this.cortexL?.visible
@@ -776,8 +820,8 @@ export class Viewer {
       pin.el.style.display = '';
       const pos = this.hemi === 'L' && pin.alt ? pin.alt : pin.pos;
       v.copy(pos).applyMatrix4(this.root.matrixWorld).project(this.camera);
-      const x = (v.x * 0.5 + 0.5) * innerWidth;
-      const y = (-v.y * 0.5 + 0.5) * innerHeight;
+      const x = (v.x * 0.5 + 0.5) * W;
+      const y = (-v.y * 0.5 + 0.5) * H;
       pin.el.style.transform =
         `translate(-50%,-50%) translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;
       // fade pins on the far side of the brain
@@ -952,16 +996,13 @@ export class Viewer {
     this.selTex.needsUpdate = true;
     this._selLabels = labels;
     this._emph = null;
+    this._seeThrough = false;
+    this.cortexUniforms.uFaintGhost.value = 0.0;
 
-    // Once the shell dissolves, every faded structure inside shows through it
-    // at once. That is useful context when the selection IS a structure, and
-    // pure clutter when it is a patch of cortex - fifteen of them stacked
-    // compete with the parcel you actually picked.
+    // Structures stay faintly visible for a cortex selection too, exactly as
+    // for a structure selection, so the inside of the brain stays in context.
     const cortexOnly = any && structs.size === 0;
-    this._mutedStructs = new Set(
-      cortexOnly
-        ? [...this.structures.keys()].filter(id => !SILHOUETTE.has(id))
-        : []);
+    this._mutedStructs = new Set();
 
     // Kept so the appearance sliders can restyle without a re-selection.
     this._selState = { structs, any, cortexOnly };
@@ -973,12 +1014,15 @@ export class Viewer {
    * Within the current selection, bring these parts forward; the rest stay
    * selected but go faint. Empty or null makes every selected part equal,
    * unless `fadeRest` - then everything selected but not listed is faint.
+   * `seeThrough` makes faint parts nearly transparent, not just dimmer.
    */
-  setEmphasis(labelIndices, structureIds, fadeRest = false) {
+  setEmphasis(labelIndices, structureIds, fadeRest = false, seeThrough = false) {
     const labels = new Set(labelIndices || []);
     const structs = new Set(structureIds || []);
     this._emph = labels.size || structs.size || fadeRest
       ? { labels, structs } : null;
+    this._seeThrough = !!seeThrough && !!this._emph;
+    this.cortexUniforms.uFaintGhost.value = this._seeThrough ? 1.0 : 0.0;
     for (const i of this._selLabels || []) {
       if (i >= 0 && i < 32) {
         this.selData[i * 4 + 1] = this._emph && !labels.has(i) ? 255 : 0;
@@ -1030,7 +1074,7 @@ export class Viewer {
       const dim = modeOnly || (any && !on) || (glass && !on);
       const baseOp = meta.opacity ?? 1;
       m.material.opacity = dim ? Math.min(1, baseOp * fade)
-        : faint ? baseOp * 0.25 : baseOp;
+        : faint ? baseOp * (this._seeThrough ? 0.06 : 0.25) : baseOp;
       m.material.depthWrite = !dim && !faint;
       m.userData.pulse = on && !faint;
       m.userData.faint = faint;
@@ -1040,8 +1084,7 @@ export class Viewer {
       // desaturated cortex stops reading as the same specimen.
       const base = m.userData.baseColor;
       if (base) {
-        const mute = !on && (cortexOnly || glass) && SILHOUETTE.has(id)
-          ? 0.82 : 0.0;
+        const mute = !on && glass && SILHOUETTE.has(id) ? 0.82 : 0.0;
         m.material.color.copy(base).lerp(GHOST_GREY, mute);
         m.material.emissive.copy(base).lerp(GHOST_GREY, mute);
       }
@@ -1068,6 +1111,14 @@ export class Viewer {
   /** Selected cortex shows its sidebar swatch colour instead of a tint. */
   setTrueColor(on) {
     this.cortexUniforms.uTrueColor.value = on ? 1.0 : 0.0;
+  }
+
+  /** Glow strongly enough that its strength reads as a level. */
+  setStrongGlow(on) {
+    this._strongGlow = !!on;
+    this.cortexUniforms.uStrongGlow.value = on ? 1.0 : 0.0;
+    // Hand structure colours back to the ordinary styling.
+    if (!on) this._styleStructures();
   }
 
   /** Per-region activation glow, 0..1, driven by the simulation. */
@@ -1121,11 +1172,18 @@ export class Viewer {
   /* ============================== LOOP =============================== */
 
   _resize() {
-    this.camera.aspect = innerWidth / innerHeight;
+    const [w, h] = this._dims();
+    this.camera.aspect = w / h;
+    // A narrow pane (Compare's half-width) would crop the brain's sides;
+    // widen the view instead so the whole specimen stays in frame.
+    this.camera.zoom = Math.min(1, (w / h) / 1.1);
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(innerWidth, innerHeight);
-    this.composer.setSize(innerWidth, innerHeight);
+    this.renderer.setSize(w, h, false);
+    this.composer.setSize(w, h);
   }
+
+  /** Call after the canvas changes size without the window resizing. */
+  resize() { this._resize(); }
 
   render(dt, t) {
     // camera tween
@@ -1156,12 +1214,24 @@ export class Viewer {
       // The appearance sliders must be applied here, not only where the
       // selection is styled: this loop rewrites emissiveIntensity every
       // frame and would otherwise pull it straight back to the default.
+      const strong = this._strongGlow && on && g > 0;
+      // A selection radiates at the chat-chip level unless glow encodes a level.
+      const sg = on && !this._strongGlow ? Math.max(g, 0.8) : g;
       const want = on
-        ? (base + 0.22 + g * 0.6) * hl
-        : m.userData.faint ? base * 0.6 * hl
+        ? (base + 0.22 + sg * (strong ? 1.2 : 0.6)) * hl
+        : m.userData.faint ? base * (this._seeThrough ? 0.1 : 0.6) * hl
         : (base + g * 1.5) * (focusing ? ga : 1.0);
       m.material.emissiveIntensity +=
         (want - m.material.emissiveIntensity) * Math.min(1, dt * 8);
+      if (strong && m.userData.baseColor) {
+        // Deeper and richer with involvement, same hue.
+        const k = Math.min(1, Math.max(0, (g - 0.12) / 0.6));
+        m.userData.baseColor.getHSL(_hsl);
+        _deep.setHSL(_hsl.h, Math.min(1, _hsl.s * (1 + 0.5 * k)),
+                     _hsl.l * (1 - 0.4 * k));
+        m.material.color.copy(_deep);
+        m.material.emissive.copy(_deep);
+      }
       if (m.scale.x !== 1) {
         m.scale.lerp(new THREE.Vector3(1, 1, 1), Math.min(1, dt * 6));
       }

@@ -10,9 +10,25 @@ python -m neuroforge   ->   launch the 3-D application.
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
+
+
+def _load_env() -> None:
+    path = Path(__file__).resolve().parent.parent / ".env"
+    if not path.is_file():
+        return
+    names = {"NEUROFORGE_CHAT_BASE", "NEUROFORGE_CHAT_MODEL",
+             "NEUROFORGE_CHAT_KEY"}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        name, separator, value = line.partition("=")
+        name = name.strip()
+        if separator and name in names and value.strip() and not line.lstrip().startswith("#"):
+            os.environ.setdefault(name, value.strip())
 
 
 def main() -> None:
+    _load_env()
     ap = argparse.ArgumentParser(
         prog="neuroforge",
         description="NeuroForge - an interactive 3-D neuroscience simulation.")

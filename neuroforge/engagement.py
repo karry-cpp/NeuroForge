@@ -130,16 +130,28 @@ def _pull(part: str, events: Dict[str, float]) -> float:
     return total
 
 
-def _touches(part: str, events: Dict[str, float]) -> bool:
-    """Whether any of these events acts on a connection of this part at all,
-    in either direction - so opposite pushes cannot cancel to 'untouched'."""
-    for node in PARTS[part]:
-        for _, pid, _ in _signs(node):
-            for eid in events:
-                ev = EVENTS_BY_ID.get(eid)
-                if ev and ev.activations.get(pid, 0.0):
-                    return True
-    return False
+@lru_cache(maxsize=None)
+def _levers(part: str) -> Dict[str, List[str]]:
+    """The events that push this part up or down hardest, per occurrence."""
+    pulls = [(_pull(part, {eid: 1.0}), eid) for eid in EVENTS_BY_ID]
+    out = {}
+    for key, sign in (("up", 1.0), ("down", -1.0)):
+        ranked = sorted(((sign * p, eid) for p, eid in pulls if sign * p > 0),
+                        reverse=True)
+        top = ranked[0][0] if ranked else 0.0
+        out[key] = [eid for p, eid in ranked if p >= REASON_SHARE * top][:3]
+    return out
+
+
+def effects(events: Dict[str, float], limit: int = 4) -> List[Dict[str, Any]]:
+    """Which parts a bundle of events pushes, and which way, strongest
+    first. Same rules as the reasons, so a note and the rows agree."""
+    pulls = [(p, part) for part in PARTS if (p := _pull(part, events))]
+    top = max((abs(p) for p, _ in pulls), default=0.0)
+    keep = sorted((x for x in pulls if abs(x[0]) >= REASON_SHARE * top),
+                  key=lambda x: -abs(x[0]))[:limit]
+    return [{"part": part, "dir": "more" if p > 0 else "less"}
+            for p, part in keep]
 
 
 def engagement(weights: Dict[str, float], days: int, warmup: int = 0,
@@ -162,14 +174,22 @@ def engagement(weights: Dict[str, float], days: int, warmup: int = 0,
         why: Dict[str, Any] = {}
         if level != "typical":
             want = 1.0 if level == "more" else -1.0
-            scored = sorted(((want * _pull(part, s["events"]), s["label"])
-                             for s in sources or []), reverse=True)
+            scored = sorted(((want * _pull(part, s["events"]), i)
+                             for i, s in enumerate(sources or [])),
+                            reverse=True)
             # A reason has to carry real weight, or a side effect such as
             # exercise's small goal-directed nudge gets listed under the ACC
             # beside the rumination that is actually driving it.
             top = scored[0][0] if scored else 0.0
-            reasons = [lbl for p, lbl in scored
-                       if p > 0 and p >= REASON_SHARE * top][:2]
+            picked = [sources[i] for p, i in scored
+                      if p > 0 and p >= REASON_SHARE * top][:2]
+            reasons = [s["label"] for s in picked]
+            refs = [s.get("ref", "") for s in picked]
+            evidence = {"answer": 0, "note": 0, "log": 0}
+            for p, i in scored:
+                kind = sources[i].get("ref", "").split(":")[0]
+                if p > 0 and kind in evidence:
+                    evidence[kind] += sources[i].get("count", 1)
             # A part can also sit low (or high) because of what someone does
             # LESS of than typical - no single answer says so.
             if rates is not None and warmup > 0:
@@ -180,26 +200,51 @@ def engagement(weights: Dict[str, float], days: int, warmup: int = 0,
                     gap = typ.get(eid, 0.0) - rates.get(eid, 0.0)
                     c = -want * _pull(part, {eid: 1.0}) * gap
                     if gap > 0 and c > 0 and eid in RARELY:
-                        gaps.append((c, RARELY[eid]))
+                        gaps.append((c, RARELY[eid], f"rarely:{eid}"))
                 gaps.sort(reverse=True)
                 gtop = gaps[0][0] if gaps else 0.0
-                reasons += [p for c, p in gaps if c >= REASON_SHARE * gtop
-                            ][:3 - len(reasons)]
+                extra = [g for g in gaps if g[0] >= REASON_SHARE * gtop
+                         ][:3 - len(reasons)]
+                reasons += [g[1] for g in extra]
+                refs += [g[2] for g in extra]
             pair = MEANING.get(part)
             why = {"meaning": pair[0 if want > 0 else 1] if pair else "",
-                   "reasons": reasons}
+                   "reasons": reasons, "refs": refs, "evidence": evidence}
         # A typical score means two different things: what was said pulls
-        # this part both ways (or about as much as typical), or nothing said
-        # reaches it at all and the model simply has no information.
+        # this part both ways with real weight, so the pulls cancel; or it
+        # barely reaches it, and the model simply has too little to go on.
+        # Per event, not per source, so one note that does both still counts.
         basis = ""
         if level == "typical":
-            basis = ("balanced" if any(_touches(part, s["events"])
-                                       for s in sources or [])
+            pulls = [_pull(part, {eid: n}) for s in sources or []
+                     for eid, n in s["events"].items()]
+            up = sum(p for p in pulls if p > 0)
+            down = -sum(p for p in pulls if p < 0)
+            basis = ("balanced" if up > 0 and down > 0
+                     and min(up, down) >= REASON_SHARE * max(up, down)
                      else "unknown")
         rows.append({"part": part, "nodes": nodes, "score": round(score, 4),
-                     "level": level, "basis": basis, "why": why})
+                     "level": level, "basis": basis, "why": why,
+                     "moves": _levers(part)})
     rows.sort(key=lambda r: -abs(r["score"]))
     return rows
+
+
+def trend(history: List[Any], warmup: int, upto: int,
+          span: int = 28) -> Dict[str, Any]:
+    """Each part's score on each recorded day up to `upto`, last `span`
+    days. Same reference as the read-out, so it is today's row, over time."""
+    by_day: Dict[int, Dict[str, float]] = {}
+    for h in history:
+        if h.day <= upto:
+            by_day[h.day] = h.weights
+    days = sorted(by_day)[-span:]
+    parts: Dict[str, List[float]] = {p: [] for p in PARTS}
+    for d in days:
+        ns = node_scores(by_day[d], warmup + d, warmup)
+        for part, nodes in PARTS.items():
+            parts[part].append(round(sum(ns[n] for n in nodes) / len(nodes), 4))
+    return {"days": days, "parts": parts}
 
 
 def logged_sources(log: List[Any]) -> List[Dict[str, Any]]:
@@ -209,5 +254,6 @@ def logged_sources(log: List[Any]) -> List[Dict[str, Any]]:
         counts[e.event_id] = counts.get(e.event_id, 0) + 1
     return [{"label": f"logged {EVENTS_BY_ID[eid].label.lower()} "
                       f"{n} time{'s' if n != 1 else ''}",
+             "ref": f"log:{eid}", "count": n,
              "events": {eid: float(n)}}
             for eid, n in counts.items() if eid in EVENTS_BY_ID]

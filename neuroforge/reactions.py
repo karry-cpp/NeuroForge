@@ -187,6 +187,7 @@ RARELY: Dict[str, str] = {
     "exercise": "rarely exercise",
     "stress_high": "rarely have high-stress days",
     "recovery": "rarely get downtime",
+    "social_hurt": "rarely feel left out",
 }
 
 # Events per week for an event read from a described pattern, at intensity
@@ -195,6 +196,8 @@ RARELY: Dict[str, str] = {
 # past the engagement threshold, 4/week did.
 TEXT_RATE = 4.0
 MAX_NOTES = 12
+# Longest description kept; the classifier itself reads up to 2000.
+MAX_TEXT = 1200
 
 
 def note_from(text: str, proposals: List[Any]) -> Optional[Dict[str, Any]]:
@@ -209,7 +212,21 @@ def note_from(text: str, proposals: List[Any]) -> Optional[Dict[str, Any]]:
             events[p.event] = round(TEXT_RATE * float(p.intensity), 2)
     if not events:
         return None
-    return {"text": text.strip()[:400], "events": events}
+    return {"text": text.strip()[:MAX_TEXT], "events": events}
+
+
+def reread(note: Dict[str, Any],
+           event_ids: List[str]) -> Optional[Dict[str, Any]]:
+    """The same note, read as the events the user says it describes.
+
+    Events it already had keep their rate; added ones weigh like a fresh
+    description. Unknown ids are dropped, as everywhere else.
+    """
+    old = note.get("events") or {}
+    ev = {e: old.get(e, TEXT_RATE) for e in dict.fromkeys(event_ids)
+          if e in EVENTS_BY_ID}
+    ev = dict(list(ev.items())[:3])
+    return dict(note, events=ev) if ev else None
 
 
 def notes_of(profile: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -295,14 +312,15 @@ def sources(answers: Dict[str, Any],
     event rates."""
     out = [{"label": BECAUSE.get(f"{q['id']}/{opt['id']}", opt["label"]),
             "question": q["prompt"],
+            "ref": f"answer:{q['id']}/{opt['id']}",
             "events": {e: f * w for e, f in opt["events"].items()}}
            for q, opt, w in chosen(answers) if opt["events"]]
-    for n in notes or []:
+    for i, n in enumerate(notes or []):
         ev = {e: float(f) for e, f in (n.get("events") or {}).items()
               if e in EVENTS_BY_ID}
         if ev:
             out.append({"label": f"said \"{_snippet(n.get('text', ''))}\"",
-                        "question": "", "events": ev})
+                        "question": "", "ref": f"note:{i}", "events": ev})
     return out
 
 
@@ -318,6 +336,91 @@ def rates(srcs: List[Dict[str, Any]]) -> Dict[str, float]:
         for eid, f in s["events"].items():
             rate[eid] = rate.get(eid, 0.0) + f
     return rate
+
+
+# How many weeks of evidence the described habits are worth. Two weeks of
+# daily logging then outweighs the description; a single log only nudges it.
+PRIOR_WEEKS = 2.0
+# Only recent logging counts: a month without logs falls back to what was
+# described, rather than treating silence as having stopped.
+HABIT_WINDOW = 28
+# Below this many per week, two rates read as the same habit.
+HABIT_SAME = 0.25
+
+
+def _tracked(logged: set) -> set:
+    """Events whose absence from the log means something: the logged ones,
+    and their alternatives in the same situation. Logging a reframe says
+    something about rumination after criticism, nothing about sleep."""
+    out = set(logged)
+    for q in QUESTIONS:
+        alts = {e for o in q["options"] for e in o["events"]}
+        if alts & logged:
+            out |= alts
+    return out
+
+
+def habit_rates(start: Dict[str, float], log: List[Any],
+                day: int) -> Dict[str, float]:
+    """Events per week now: the described rates, updated by what was logged.
+
+    Only days with at least one log count as observed, on the assumption
+    that on a day you log, you log what happened - so a quiet week in the
+    app is not read as a week without rumination. And only situations you
+    log about are observed at all; the rest keep their described rate.
+    """
+    recent = [e for e in log if day - HABIT_WINDOW < e.day <= day
+              and e.event_id in EVENTS_BY_ID]
+    active = len({e.day for e in recent})
+    if not active:
+        return dict(start)
+    counts: Dict[str, int] = {}
+    for e in recent:
+        counts[e.event_id] = counts.get(e.event_id, 0) + 1
+    tracked = _tracked(set(counts))
+    weeks = active / 7
+    return {eid: ((start.get(eid, 0.0) * PRIOR_WEEKS + counts.get(eid, 0))
+                  / (PRIOR_WEEKS + weeks)) if eid in tracked
+                 else start.get(eid, 0.0)
+            for eid in set(start) | set(counts)}
+
+
+def habits(profile: Optional[Dict[str, Any]],
+           target_profile: Optional[Dict[str, Any]],
+           log: List[Any], day: int) -> List[Dict[str, Any]]:
+    """Each habit's rate as described, now, and as aimed for, with how far
+    along it is. Progress is (now - start) / (target - start): negative is
+    moving away, above 1 is past the aim."""
+    if not profile:
+        return []
+    start = profile_rates(profile.get("answers", {}), notes_of(profile))
+    now = habit_rates(start, log, day)
+    goal = (profile_rates(target_profile.get("answers", {}),
+                          notes_of(target_profile))
+            if target_profile else None)
+    logged: Dict[str, int] = {}
+    for e in log:
+        if day - HABIT_WINDOW < e.day <= day:
+            logged[e.event_id] = logged.get(e.event_id, 0) + 1
+    rows = []
+    for eid in EVENTS_BY_ID:
+        s, n = start.get(eid, 0.0), now.get(eid, 0.0)
+        t = goal.get(eid, 0.0) if goal is not None else None
+        if max(s, n, t or 0.0) < HABIT_SAME:
+            continue
+        aimed = t is not None and abs(t - s) >= HABIT_SAME
+        rows.append({
+            "event": eid, "label": EVENTS_BY_ID[eid].label,
+            "start": round(s, 2), "now": round(n, 2),
+            "target": None if t is None else round(t, 2),
+            "progress": round((n - s) / (t - s), 3) if aimed else None,
+            "logged": logged.get(eid, 0),
+        })
+    rows.sort(key=lambda r: (
+        r["progress"] is None,
+        -abs((r["now"] if r["target"] is None else r["target"]) - r["now"]),
+        -r["now"]))
+    return rows
 
 
 def replay(sim: Simulation, rate: Dict[str, float], days: int) -> None:
@@ -367,3 +470,28 @@ def build(answers: Dict[str, str],
         if d < day:
             sim.advance_day()
     return sim
+
+
+def build_target(answers: Dict[str, Any],
+                 notes: Optional[List[Dict[str, Any]]] = None
+                 ) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    """The brain the user's aims would build: the same replay, run on how
+    they WANT to react. Returns (weights, target profile).
+
+    Unwanted pathways are floored at the app's own fixed targets. A working
+    threat response is part of any healthy target - aiming it at zero is the
+    one thing this app refuses to model as a goal.
+    """
+    from .atlas import PATHWAYS
+    notes = [n for n in (notes or []) if n.get("events")][:MAX_NOTES]
+    sim = Simulation(seed=0)
+    replay(sim, profile_rates(answers, notes), WEEKS * 7)
+    for c in sim.current.conns:
+        pw = PATHWAYS[c.pathway]
+        if not pw.desirable:
+            c.w = max(c.w, pw.target)
+    picked: Dict[str, List[str]] = {}
+    for q, opt, _ in chosen(answers):
+        picked.setdefault(q["id"], []).append(opt["id"])
+    return sim.current.snapshot(), {"answers": picked, "notes": notes,
+                                    "weeks": WEEKS}

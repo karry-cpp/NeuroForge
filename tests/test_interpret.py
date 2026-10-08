@@ -205,6 +205,42 @@ class TestPresentTenseAndFeelings(unittest.TestCase):
         self.assertEqual(self.top("it was a stressful week"), "stress_high")
 
 
+class TestSocialHurtAndOutburstGate(unittest.TestCase):
+
+    ENTRY = ("she did not acknowledge me and talked to her friends, i felt "
+             "inferior. today she ignored me again, still i feel upset. i "
+             "feel like that woman also should suffer")
+
+    def test_being_ignored_reads_as_social_hurt(self):
+        got = {p.event for p in classify_keywords(self.ENTRY).proposals}
+        self.assertIn("social_hurt", got)
+        self.assertIn("rumination", got)
+        self.assertNotIn("reactive_outburst", got)
+
+    def test_gate_drops_a_model_outburst_with_no_outward_act(self):
+        from neuroforge.interpret import _outburst_gate
+        r = _validate({"proposals": [
+            {"event": "rumination", "intensity": 1, "confidence": .7},
+            {"event": "reactive_outburst", "intensity": 1, "confidence": .6},
+        ]}, "llm:test")
+        got = [p.event for p in _outburst_gate(r, self.ENTRY).proposals]
+        self.assertEqual(got, ["rumination"])
+
+    def test_gate_keeps_a_real_outburst(self):
+        from neuroforge.interpret import _outburst_gate
+        r = _validate({"proposals": [
+            {"event": "reactive_outburst", "intensity": 1, "confidence": .6},
+        ]}, "llm:test")
+        got = _outburst_gate(r, "i snapped at my brother").proposals
+        self.assertEqual([p.event for p in got], ["reactive_outburst"])
+
+    def test_social_hurt_shows_the_insula(self):
+        from neuroforge.analyse import targets_for
+        t = targets_for(["social_hurt"])
+        self.assertIn("aINS", t["regions"])
+        self.assertIn("dACC", t["regions"])
+
+
 class TestDiscoveryCachesAMiss(unittest.TestCase):
     """A machine with no model runner must not re-probe on every entry.
 
