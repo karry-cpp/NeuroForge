@@ -57,6 +57,7 @@ class Structure:
     # is used only as an offline fallback. Such meshes are already bilateral
     # and must not be mirrored again.
     aseg: str = ""
+    label: str = ""              # sidebar name; set from DISPLAY_NAMES
 
 
 # ==========================================================================
@@ -495,6 +496,7 @@ class CorticalRegion:
     # selected - otherwise the region highlights perfectly correctly and the
     # user sees nothing at all, which is indistinguishable from a broken app.
     buried: bool = False
+    label: str = ""              # sidebar name; set from DISPLAY_NAMES
 
 
 CORTICAL_REGIONS: List[CorticalRegion] = [
@@ -665,7 +667,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
         caveat="",
     ),
     CorticalRegion(
-        "motor", 7, "Primary motor cortex", "Motor", "#a3a3a3",
+        "motor", 7, "Primary motor cortex", "Motor", "#a78bfa",
         what_it_is="The precentral gyrus: the cortex whose output descends "
                    "to the spinal cord to drive movement directly. Like the "
                    "somatosensory strip behind it, it carries a body map.",
@@ -683,7 +685,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
     # somatosensory, superior parietal, supramarginal, TPJ or precuneus - so
     # a catch-all region would open a panel that highlighted nothing.
     CorticalRegion(
-        "temporal", 9, "Temporal cortex", "Temporal", "#a8a29e",
+        "temporal", 9, "Temporal cortex", "Temporal", "#d0775f",
         what_it_is="The lobe below the Sylvian fissure.",
         where_it_is="The sides of the brain, by the ears.",
         contributes_to="Hearing, language, object and face recognition, "
@@ -693,7 +695,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
         caveat="",
     ),
     CorticalRegion(
-        "occipital", 10, "Occipital cortex", "Occipital", "#78716c",
+        "occipital", 10, "Occipital cortex", "Occipital", "#3fae9a",
         what_it_is="The lobe at the very back.",
         where_it_is="Rear of the brain.",
         contributes_to="Vision.",
@@ -790,7 +792,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
     # answer "what is that bit?" for the whole cortex rather than only for
     # the regions this particular model happens to use.
     CorticalRegion(
-        "premotor", 15, "Premotor cortex", "Premotor", "#cbd5e1",
+        "premotor", 15, "Premotor cortex", "Premotor", "#d4a83a",
         what_it_is="A strip of frontal cortex immediately in front of the "
                    "primary motor cortex, including the supplementary motor "
                    "area on the medial wall.",
@@ -808,7 +810,7 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
     ),
     CorticalRegion(
         "somatosensory", 16, "Somatosensory cortex", "Somatosensory",
-        "#e2e8f0",
+        "#4f8fd1",
         what_it_is="Primary somatosensory cortex, the postcentral gyrus. "
                    "It contains an orderly map of the body surface - the "
                    "sensory homunculus.",
@@ -938,6 +940,59 @@ CORTICAL_REGIONS: List[CorticalRegion] = [
 CORTICAL_BY_ID: Dict[str, CorticalRegion] = {r.id: r for r in CORTICAL_REGIONS}
 CORTICAL_BY_INDEX: Dict[int, CorticalRegion] = {
     r.label_index: r for r in CORTICAL_REGIONS}
+
+
+# Plain-language display names: id -> (3-D pin label, sidebar label).
+# `name` stays the anatomical title, which the chat retrieval matches against.
+DISPLAY_NAMES: Dict[str, Tuple[str, str]] = {
+    # cortex
+    "dlPFC": ("Planning", "Planning cortex (dlPFC)"),
+    "vlPFC": ("Self-control", "Self-control cortex (vlPFC)"),
+    "vmPFC": ("Value", "Value & calming cortex (vmPFC)"),
+    "mPFC": ("Self-reflection", "Self-reflection cortex (mPFC)"),
+    "OFC": ("Reward value", "Reward-value cortex (OFC)"),
+    "FPC": ("Front pole", "Front pole (FPC)"),
+    "dACC": ("Conflict monitor", "Conflict monitor (dACC)"),
+    "sgACC": ("Mood", "Mood cingulate (sgACC)"),
+    "PCC": ("Mind-wandering", "Mind-wandering hub (PCC)"),
+    "aINS": ("Body feeling", "Body feeling (anterior insula)"),
+    "pINS": ("Body sensing", "Body sensing (posterior insula)"),
+    "motor": ("Movement", "Movement (primary motor cortex)"),
+    "premotor": ("Movement planning", "Movement planning (premotor)"),
+    "somatosensory": ("Touch", "Touch & body sense (somatosensory)"),
+    "V1": ("Vision", "Primary vision (V1)"),
+    "occipital": ("Visual", "Visual processing (occipital)"),
+    "A1": ("Hearing", "Primary hearing (A1)"),
+    "temporal": ("Temporal", "Hearing & recognition (temporal)"),
+    "STS": ("Speech & social", "Speech & social cues (STS)"),
+    "MTL": ("Memory cortex", "Memory cortex (medial temporal)"),
+    "fusiform": ("Faces", "Face & object recognition (fusiform)"),
+    "SPL": ("Spatial attention", "Spatial attention (SPL)"),
+    "supramarginal": ("Supramarginal", "Language & empathy (supramarginal)"),
+    "TPJ": ("Perspective", "Perspective-taking (TPJ)"),
+    "precuneus": ("Precuneus", "Self-imagery (precuneus)"),
+    # subcortical structures
+    "amygdala": ("Amygdala", "Emotional significance (amygdala)"),
+    "hippocampus": ("Hippocampus", "Memory hub (hippocampus)"),
+    "caudate": ("Caudate", "Goal-directed action (caudate)"),
+    "putamen": ("Putamen", "Habit hub (putamen)"),
+    "thalamus": ("Thalamus", "Relay station (thalamus)"),
+    "brainstem": ("Brainstem", "Life support (brainstem)"),
+    "cerebellum": ("Cerebellum", "Coordination (cerebellum)"),
+    "ventricles": ("Ventricles", "Fluid spaces (ventricles)"),
+    "accumbens": ("Reward hub", "Reward hub (nucleus accumbens)"),
+    "vta": ("Dopamine source", "Dopamine source (VTA)"),
+    "ventraldc": ("Hypothalamus area",
+                  "Hypothalamus area (ventral diencephalon)"),
+    "callosum": ("Corpus callosum", "Hemisphere bridge (corpus callosum)"),
+    "pallidum": ("Movement brake", "Movement brake (globus pallidus)"),
+    "acc": ("Anterior cingulate", "Anterior cingulate (ACC)"),
+    "sgacc": ("Mood", "Mood cingulate (sgACC)"),
+}
+
+for _part in [*STRUCTURES, *CORTICAL_REGIONS]:
+    _part.short, _part.label = DISPLAY_NAMES.get(
+        _part.id, (_part.short, _part.short))
 
 
 # ==========================================================================

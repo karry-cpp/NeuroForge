@@ -282,6 +282,28 @@ def strip_markers(text: str) -> str:
     return MARKER.sub("", text)
 
 
+def asked_ids(question: str, scene: Dict[str, Any]) -> List[str]:
+    """Parts the question itself names, in the order they appear."""
+    q = question.lower()
+    hits: List[Tuple[int, str]] = []
+    seen = set()
+    for x in (scene.get("cortical_regions") or []) + (scene.get("structures") or []):
+        label = x.get("label") or ""
+        plain, _, inner = label.partition("(")
+        aliases = {x["id"], x.get("name", ""), label, inner.rstrip(")")}
+        # Single plain words ("Mood", "Touch") are too common to mean the part.
+        if len(plain.split()) > 1:
+            aliases.add(plain)
+        pos = min((m.start() for a in aliases if a.strip()
+                   for m in re.finditer(r"\b" + re.escape(a.strip().lower())
+                                        + r"\b", q)), default=-1)
+        # sgACC exists as both a structure and a cortex region; light it once.
+        if pos >= 0 and x["id"].lower() not in seen:
+            seen.add(x["id"].lower())
+            hits.append((pos, x["id"]))
+    return [rid for _, rid in sorted(hits)]
+
+
 # --------------------------------------------------------------------------
 # Streaming transport
 # --------------------------------------------------------------------------

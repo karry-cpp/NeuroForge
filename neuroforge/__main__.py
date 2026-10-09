@@ -19,12 +19,18 @@ def _load_env() -> None:
     if not path.is_file():
         return
     names = {"NEUROFORGE_CHAT_BASE", "NEUROFORGE_CHAT_MODEL",
-             "NEUROFORGE_CHAT_KEY"}
+             "NEUROFORGE_CHAT_KEY", "NEUROFORGE_LLM_BASE",
+             "NEUROFORGE_LLM_MODEL", "NEUROFORGE_LLM_KEY"}
     for line in path.read_text(encoding="utf-8").splitlines():
         name, separator, value = line.partition("=")
         name = name.strip()
         if separator and name in names and value.strip() and not line.lstrip().startswith("#"):
             os.environ.setdefault(name, value.strip())
+    # Log interpretation and analysis read NEUROFORGE_LLM_*; default them to the chat provider.
+    for part in ("BASE", "MODEL", "KEY"):
+        chat = os.environ.get(f"NEUROFORGE_CHAT_{part}")
+        if chat:
+            os.environ.setdefault(f"NEUROFORGE_LLM_{part}", chat)
 
 
 def main() -> None:

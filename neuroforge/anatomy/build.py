@@ -44,7 +44,14 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(
 # v12: region/structure colours re-picked so co-highlighted parts differ
 #      (vlPFC, vmPFC, caudate and mPFC were all near the same blue).
 # v13: vlPFC toned down (#8b5cf6 -> #8468c0).
-SCENE_VERSION = 13
+# v14: motor, premotor, somatosensory, temporal and occipital given distinct
+#      colours; all five were near-identical greys.
+# v15: plain-language display names (`short` pin label, new `label` field).
+# v16: the v14 colours muted to tinted neutrals, closer to the originals.
+# v17: those five re-picked as mid-tones that sit with the rest of the palette.
+# v18: every sidebar label in "plain name (anatomical name)" form.
+# v19: primary motor cortex recoloured (raspberry -> soft violet).
+SCENE_VERSION = 19
 
 
 # --------------------------------------------------------------------------
@@ -187,7 +194,7 @@ def build_scene(subdivisions: int = 6, verbose: bool = True) -> Dict[str, Any]:
 
         meshes[f"struct_{s.id}"] = encode_mesh(geo)
         structures.append({
-            "id": s.id, "name": s.name, "short": s.short,
+            "id": s.id, "name": s.name, "short": s.short, "label": s.label,
             "system": s.system, "color": s.color, "opacity": s.opacity,
             "order": s.order, "bilateral": s.bilateral,
             "geometry_source": source,
@@ -240,7 +247,8 @@ def build_scene(subdivisions: int = 6, verbose: bool = True) -> Dict[str, Any]:
 
     cortical = [{
         "id": r.id, "label_index": r.label_index, "name": r.name,
-        "short": r.short, "color": r.color, "buried": r.buried,
+        "short": r.short, "label": r.label, "color": r.color,
+        "buried": r.buried,
         "centroids": _centroids(r.label_index),
         "knowledge": {
             "what_it_is": r.what_it_is, "where_it_is": r.where_it_is,

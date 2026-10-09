@@ -457,12 +457,13 @@ def classify_llm(text: str, timeout: float = 0.0) -> Interpretation:
             # This is a classification, not a puzzle. Reasoning models will
             # otherwise spend their whole budget thinking: measured on
             # Qwen3.5-9B, 796 of 800 tokens went to reasoning and the reply
-            # came back empty with finish_reason "length". Servers that do
-            # not understand these keys ignore them.
-            "chat_template_kwargs": {"enable_thinking": False},
+            # came back empty with finish_reason "length".
             "reasoning_effort": "low",
             "max_tokens": 2400,
         }
+        # Hosted providers such as Groq reject chat_template_kwargs with a 400.
+        if any(h in base for h in ("127.0.0.1", "localhost", "0.0.0.0", "::1")):
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         url = f"{base}/chat/completions"
         try:
             data = _post_json(
