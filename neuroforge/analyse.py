@@ -468,6 +468,10 @@ def analyse(text: str, event_ids: List[str],
     out["text"] = fallback
     out["source"] = "rules"
     out["model"] = ""
+    from .engagement import alternatives, moves_for
+    known = [e["id"] for e in targets["events"]]
+    out["moves"] = moves_for({e: 1.0 for e in known})
+    out["alternatives"] = alternatives(known)
 
     if not allow_llm:
         return out

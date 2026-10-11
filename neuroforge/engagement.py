@@ -143,6 +143,51 @@ def _levers(part: str) -> Dict[str, List[str]]:
     return out
 
 
+# A moment's push on a part must be at least this share of the strongest to
+# be shown. Low because the amygdala, with the most connections, dominates:
+# at 0.2 a rumination moment showed nothing but it and the ACC.
+MOMENT_SHARE = 0.06
+
+# Responses a moment can be compared against.
+RESPONSES = ("name_emotion", "pause", "disengage", "reappraisal",
+             "mindful_practice", "regulated_success")
+
+
+def moves_for(events: Dict[str, float], limit: int = 6) -> List[Dict[str, Any]]:
+    """Which way, and how hard, this bundle of events pushes each part -
+    the same signed rules as the Current read-out, for one moment."""
+    pulls = [(p, part) for part in PARTS if (p := _pull(part, events))]
+    top = max((abs(p) for p, _ in pulls), default=0.0)
+    keep = sorted((x for x in pulls if abs(x[0]) >= MOMENT_SHARE * top),
+                  key=lambda x: -abs(x[0]))[:limit]
+    out = []
+    for p, part in keep:
+        more = p > 0
+        pair = MEANING.get(part, ("", ""))
+        out.append({"part": part, "dir": "more" if more else "less",
+                    "strength": round(abs(p) / top, 3),
+                    "meaning": pair[0 if more else 1]})
+    return out
+
+
+def alternatives(event_ids: List[str], k: int = 3) -> List[Dict[str, Any]]:
+    """Responses whose rules push hardest against what this moment pushes."""
+    now = {e: 1.0 for e in event_ids if e in EVENTS_BY_ID}
+    if not now:
+        return []
+    base = {part: _pull(part, now) for part in PARTS}
+    scored = []
+    for alt in RESPONSES:
+        if alt in now:
+            continue
+        counter = sum(-b * _pull(part, {alt: 1.0}) for part, b in base.items())
+        if counter > 0:
+            scored.append((counter, alt))
+    scored.sort(reverse=True)
+    return [{"event": a, "label": EVENTS_BY_ID[a].label,
+             "moves": moves_for({a: 1.0})} for _, a in scored[:k]]
+
+
 def effects(events: Dict[str, float], limit: int = 4) -> List[Dict[str, Any]]:
     """Which parts a bundle of events pushes, and which way, strongest
     first. Same rules as the reasons, so a note and the rows agree."""

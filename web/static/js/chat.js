@@ -18,10 +18,11 @@
 const $ = (s) => document.querySelector(s);
 
 export class Chat {
-  constructor({ onShow, onLog, onClose }) {
+  constructor({ onShow, onLog, onClose, labelOf }) {
     this.onShow = onShow;      // (ids)   -> highlight regions in the 3-D view
     this.onLog = onLog;        // (id, intensity, note) -> apply an event
     this.onClose = onClose;
+    this.labelOf = labelOf;
     this.history = [];         // verbatim turns only; never a summary
     this.busy = false;
     this.mode = 'ask';
@@ -190,7 +191,8 @@ export class Chat {
             if (data.text) acc = data.text;
             bubble.innerHTML = render(acc);
             if (data.ids?.length) {
-              bubble.appendChild(chips(data.ids, this.onShow));
+              bubble.appendChild(
+                chips(data.ids, this.onShow, this.labelOf, data.asked));
             }
           }
         }
@@ -278,13 +280,14 @@ function render(t) {
   return s.replace(/\n{2,}/g, '</p><p>').replace(/^/, '<p>') + '</p>';
 }
 
-function chips(ids, onShow) {
+function chips(ids, onShow, labelOf, asked = []) {
   const wrap = document.createElement('div');
   wrap.className = 'chips';
   ids.forEach((id) => {
     const b = document.createElement('button');
-    b.className = 'chip';
-    b.textContent = id;
+    b.className = asked.includes(id) ? 'chip asked' : 'chip';
+    b.textContent = labelOf?.(id) || id;
+    b.title = id;
     b.onclick = () => onShow?.([id]);
     wrap.appendChild(b);
   });

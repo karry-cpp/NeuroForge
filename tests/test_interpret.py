@@ -241,6 +241,29 @@ class TestSocialHurtAndOutburstGate(unittest.TestCase):
         self.assertIn("dACC", t["regions"])
 
 
+class TestMoment(unittest.TestCase):
+
+    def test_rumination_raises_the_alarm_and_lowers_the_brake(self):
+        from neuroforge.engagement import moves_for
+        got = {m["part"]: m["dir"] for m in moves_for({"rumination": 1.0})}
+        self.assertEqual(got.get("amygdala"), "more")
+        self.assertEqual(got.get("vlPFC"), "less")
+
+    def test_alternatives_push_the_other_way(self):
+        from neuroforge.engagement import alternatives
+        alts = alternatives(["rumination"])
+        self.assertTrue(alts)
+        for a in alts:
+            dirs = {m["part"]: m["dir"] for m in a["moves"]}
+            self.assertEqual(dirs.get("amygdala"), "less", a["event"])
+
+    def test_analyse_returns_moves_without_a_model(self):
+        from neuroforge.analyse import analyse
+        a = analyse("i keep replaying it", ["rumination"], allow_llm=False)
+        self.assertTrue(a["moves"])
+        self.assertTrue(a["alternatives"])
+
+
 class TestDiscoveryCachesAMiss(unittest.TestCase):
     """A machine with no model runner must not re-probe on every entry.
 
