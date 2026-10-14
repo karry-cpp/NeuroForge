@@ -30,6 +30,8 @@ class LogEntry:
     event_id: str
     note: str = ""
     intensity: float = 1.0     # 0.25 .. 1.5 - "how much of it did you do?"
+    # pathway -> change in strength this entry caused, at the moment it landed
+    moved: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,7 +106,9 @@ class Simulation:
             self._today_lr_bonus = max(self._today_lr_bonus, 1.15)
 
         # plasticity
+        moved: Dict[str, float] = {}
         if ev.activations:
+            before = self.current.pathway_profile()
             reps = self._reps_today.get(ev.id, 0)
             lr = (ev.lr_mult * self._today_lr_bonus
                   * arousal_gain(self.stress) * sleep_gain(self.sleep)
@@ -114,8 +118,11 @@ class Simulation:
                                         repetitions_today=reps,
                                         reward=ev.reward)
             self._reps_today[ev.id] = reps + 1
+            after = self.current.pathway_profile()
+            moved = {k: round(after[k] - before[k], 6) for k in after
+                     if abs(after[k] - before[k]) > 1e-6}
 
-        self.log.append(LogEntry(self.day, event_id, note, intensity))
+        self.log.append(LogEntry(self.day, event_id, note, intensity, moved))
         self._today_events.append(event_id)
         self._record(replace=True)
         self._emit()
@@ -208,6 +215,59 @@ class Simulation:
                  else None)
         return per_pathway_progress(self.current, self._start_pathways, goals)
 
+    def start_weights(self) -> Dict[str, float]:
+        return {f"{c.spec.src}->{c.spec.dst}": round(v, 6)
+                for c, v in zip(self.current.conns, self._start_vector)}
+
+    def practice(self) -> List[dict]:
+        """Per pathway: how many logs pushed it toward its target and how
+        many pushed it away, how far logs moved it each way, and how much
+        has set.
+
+        'toward' follows the target, not the category: being hurt is a State
+        event, but it still pushes rumination the wrong way. The change that
+        no log accounts for is what the nights did - decay, drift and
+        stress - and is reported as such rather than hidden.
+        """
+        goals = (self.target.pathway_profile() if self.target_weights
+                 else {p.id: p.target for p in PATHWAYS.values()})
+        now = self.current.pathway_profile()
+        week = self.day - 6
+        rows = []
+        for pid, pw in PATHWAYS.items():
+            start = self._start_pathways.get(pid, now[pid])
+            gap = goals[pid] - start
+            sign = (1.0 if gap > 0 else -1.0) if abs(gap) > 0.01 else (
+                1.0 if pw.desirable else -1.0)
+            r = {"toward": 0, "away": 0, "toward_week": 0, "away_week": 0,
+                 "gained": 0.0, "lost": 0.0}
+            for e in self.log:
+                # Competition moves pathways a log never named, so movement
+                # is summed over every log, not only the ones counted.
+                m = e.moved.get(pid, 0.0) * sign
+                r["gained" if m > 0 else "lost"] += abs(m)
+                a = EVENTS_BY_ID[e.event_id].activations.get(pid, 0.0)
+                if not a:
+                    continue
+                side = "toward" if a * sign > 0 else "away"
+                r[side] += 1
+                if e.day >= week:
+                    r[side + "_week"] += 1
+            net = (now[pid] - start) * sign
+            if not (r["toward"] or r["away"] or abs(net) > 0.002):
+                continue
+            conns = self.current.by_pathway[pid]
+            rows.append(dict(
+                r, pathway=pid, label=pw.label, color=pw.color,
+                start=round(start, 4), now=round(now[pid], 4),
+                target=round(goals[pid], 4), sign=int(sign),
+                gained=round(r["gained"], 5), lost=round(r["lost"], 5),
+                net=round(net, 5),
+                nights=round(net - r["gained"] + r["lost"], 5),
+                consolidated=round(sum(c.c for c in conns) / len(conns), 3)))
+        rows.sort(key=lambda x: -(x["toward"] + x["away"]))
+        return rows
+
     def date_for(self, day: int) -> date:
         return self.start_date + timedelta(days=day)
 
@@ -257,6 +317,8 @@ class Simulation:
             "stress": self.stress,
             "sleep": self.sleep,
             "weights": self.current.snapshot(),
+            "traces": {f"{c.spec.src}->{c.spec.dst}": [c.c, c.e]
+                       for c in self.current.conns},
             "log": [asdict(e) for e in self.log],
             "history": [asdict(h) for h in self.history],
             "start_vector": self._start_vector,
@@ -283,6 +345,11 @@ class Simulation:
         sim.stress = d["stress"]
         sim.sleep = d["sleep"]
         sim.current.load(d["weights"])
+        traces = d.get("traces") or {}
+        for c in sim.current.conns:
+            t = traces.get(f"{c.spec.src}->{c.spec.dst}")
+            if t:
+                c.c, c.e = t
         sim.log = [LogEntry(**e) for e in d["log"]]
         sim.history = [DaySnapshot(**h) for h in d["history"]]
         sim._start_vector = d.get("start_vector", sim._start_vector)

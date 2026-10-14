@@ -12,6 +12,7 @@ the WebGL renderer, which is what keeps the two independent.
   POST /api/sim/interpret   free text -> suggested events (does NOT apply)
   POST /api/sim/analyse     free text + events -> what the rules engage
   POST /api/sim/advance     advance N days
+  GET  /api/sim/projection  where current habits lead (run on a copy)
   POST /api/sim/replay      state at a past day
   POST /api/sim/reset       start over
   POST /api/sim/demo        fast-forward a scripted practice history
@@ -39,7 +40,7 @@ from ..engagement import effects, engagement, logged_sources, trend
 from ..engine import Simulation
 from ..events import CATEGORIES, EVENT_TYPES
 from ..interpret import interpret, llm_config
-from ..llm import (build_context, extract_markers, public_chat_config,
+from ..llm import (asked_ids, build_context, extract_markers, public_chat_config,
                    stream_chat, strip_markers)
 from .. import reactions
 from .app import API, ClientGone
@@ -224,6 +225,8 @@ def _state(sim: Simulation, weights: Dict[str, float] | None = None,
         "overnight": sim.last_overnight if day is None else None,
         "consolidation": {f"{c.spec.src}->{c.spec.dst}": round(c.c, 4)
                           for c in sim.current.conns},
+        "start_weights": sim.start_weights(),
+        "practice": sim.practice(),
         "targets": ({f"{c.spec.src}->{c.spec.dst}": round(c.w, 4)
                      for c in sim.target.conns} if sim.target_weights else
                     {f"{c.spec.src}->{c.spec.dst}": c.target
@@ -244,6 +247,7 @@ def _state(sim: Simulation, weights: Dict[str, float] | None = None,
         "total_practices": sum(
             1 for e in sim.log
             if _event_category(e.event_id) == "Practice"),
+        "log_count": len(sim.log),
         "log": [{"day": e.day, "event": e.event_id, "note": e.note,
                  "intensity": e.intensity} for e in sim.log[-120:]],
         "history": [{"day": h.day, "alignment": h.alignment,
@@ -360,6 +364,13 @@ def _advance(payload: Dict[str, Any]) -> Dict[str, Any]:
     SIM.advance_day(int(payload.get("days", 1)))
     _persist()
     return _state(SIM)
+
+
+@API.get("/api/sim/projection")
+@guarded
+def _projection(_: Dict[str, Any]) -> Dict[str, Any]:
+    """Where the current habits lead, run on a copy. Changes nothing."""
+    return reactions.projection(SIM)
 
 
 @API.post("/api/sim/replay")
@@ -682,12 +693,16 @@ def _chat(payload: Dict[str, Any], h: Any) -> None:
     model = _model({})
 
     context, valid_ids = build_context(question, scene, state, model)
+    # When the question names parts, only those glow; the rest become chips.
+    asked = asked_ids(question, scene)
 
     h.sse_begin()
     h.sse("meta", {"model": cfg.get("model", ""), "local": cfg.get("local")})
+    if asked:
+        h.sse("show", {"ids": asked})
 
     buf: List[str] = []
-    sent_ids: List[str] = []
+    sent_ids: List[str] = list(asked)
     try:
         for piece in stream_chat(question, context, history):
             buf.append(piece)
@@ -697,7 +712,8 @@ def _chat(payload: Dict[str, Any], h: Any) -> None:
             for rid in extract_markers(joined, valid_ids):
                 if rid not in sent_ids:
                     sent_ids.append(rid)
-                    h.sse("show", {"ids": [rid]})
+                    if not asked:
+                        h.sse("show", {"ids": [rid]})
             h.sse("token", {"text": piece})
     except ClientGone:
         raise
@@ -705,4 +721,4 @@ def _chat(payload: Dict[str, Any], h: Any) -> None:
         h.sse("error", {"message": f"{type(exc).__name__}: {exc}"})
 
     h.sse("done", {"text": strip_markers("".join(buf)).strip(),
-                   "ids": sent_ids})
+                   "ids": sent_ids, "asked": asked})

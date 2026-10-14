@@ -326,6 +326,62 @@ class TestTarget(unittest.TestCase):
         self.assertAlmostEqual(back.progress, sim.progress, places=6)
 
 
+class TestChangeOverTime(unittest.TestCase):
+
+    def _practised(self):
+        sim = R.build(RUMINATOR)
+        for d in range(12):
+            sim.log_event("reappraisal")
+            if d % 4 == 0:
+                sim.log_event("rumination")
+            sim.advance_day()
+        return sim
+
+    def test_tally_counts_toward_and_away(self):
+        rows = {r["pathway"]: r for r in self._practised().practice()}
+        reg = rows["regulation"]
+        self.assertEqual((reg["toward"], reg["away"]), (12, 3))
+        self.assertGreater(reg["gained"], reg["lost"])
+        # Rumination is aimed down, so reframing counts toward it too.
+        self.assertEqual(rows["rumination"]["toward"], 12)
+
+    def test_logs_plus_nights_add_up_to_the_net(self):
+        for r in self._practised().practice():
+            self.assertAlmostEqual(r["gained"] - r["lost"] + r["nights"],
+                                   r["net"], places=4)
+
+    def test_projection_changes_nothing(self):
+        sim = self._practised()
+        before = (sim.current.snapshot(), sim.day, len(sim.log),
+                  len(sim.history))
+        R.projection(sim)
+        self.assertEqual(before, (sim.current.snapshot(), sim.day,
+                                  len(sim.log), len(sim.history)))
+
+    def test_projection_is_repeatable_and_practice_matters(self):
+        sim = self._practised()
+        a, b = R.projection(sim), R.projection(sim)
+        self.assertEqual(a, b)
+        self.assertEqual([h["days"] for h in a["keep"]], list(R.HORIZONS))
+        self.assertGreater(a["keep"][-1]["progress"],
+                           a["stop"][-1]["progress"])
+
+    def test_nothing_to_project_without_logs_or_profile(self):
+        self.assertEqual(R.projection(Simulation(seed=0))["keep"], [])
+
+    def test_consolidation_survives_save_and_load(self):
+        sim = self._practised()
+        path = os.path.join(tempfile.mkdtemp(), "s.json")
+        sim.save(path)
+        back = Simulation.load(path)
+        self.assertEqual([c.c for c in back.current.conns],
+                         [c.c for c in sim.current.conns])
+        keys = ("pathway", "toward", "away", "gained", "lost",
+                "consolidated")
+        self.assertEqual([{k: r[k] for k in keys} for r in back.practice()],
+                         [{k: r[k] for k in keys} for r in sim.practice()])
+
+
 class TestAutosave(unittest.TestCase):
 
     def test_restart_restores_the_session(self):

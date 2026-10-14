@@ -564,6 +564,8 @@ export function resultHtml(applied, deltas, state) {
       the point.
     </div>
 
+    <div id="logAhead"></div>
+
     ${section('THE RULE APPLIED', 'model', applied.rule, 'model')}
     ${section('WHAT THE SCIENCE ACTUALLY SAYS', 'real', applied.science,
               'real')}

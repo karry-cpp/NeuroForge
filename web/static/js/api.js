@@ -42,6 +42,8 @@ export const API = {
     jpost('/api/target/goal/edit', { index, events }),
   clearTarget: () => jpost('/api/target/clear', {}),
   advance:  (days = 1) => jpost('/api/sim/advance', { days }),
+  // Runs current habits forward on a copy. Changes nothing.
+  projection: () => jget('/api/sim/projection'),
   replay:   (day) => jpost('/api/sim/replay', { day }),
   reset:    (clearProfile = false) =>
     jpost('/api/sim/reset', { clear_profile: clearProfile }),

@@ -17,7 +17,9 @@ instrument, and the UI says so. Nothing here is an assessment.
 
 from __future__ import annotations
 
+import copy
 import math
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from .engine import Simulation
@@ -423,14 +425,81 @@ def habits(profile: Optional[Dict[str, Any]],
     return rows
 
 
-def replay(sim: Simulation, rate: Dict[str, float], days: int) -> None:
-    """Run `rate` (events per week) through `sim` for `days`, evenly spread."""
-    for d in range(days):
+def replay(sim: Simulation, rate: Dict[str, float], days: int,
+           start: int = 0) -> None:
+    """Run `rate` (events per week) through `sim` for `days`, evenly spread.
+    `start` continues an earlier run's schedule."""
+    for d in range(start, start + days):
         for eid in sorted(rate):
             f = rate[eid]
             for _ in range(math.floor((d + 1) * f / 7) - math.floor(d * f / 7)):
                 sim.log_event(eid)
         sim.advance_day()
+
+
+HORIZONS = (30, 90, 180)
+# One fixed draw of luck, so the forecast only moves when the habits do.
+PROJECTION_SEED = 11
+
+
+def _fork(sim: Simulation) -> Simulation:
+    keep = sim.listeners, sim.history
+    sim.listeners, sim.history = [], []
+    try:
+        clone = copy.deepcopy(sim)
+    finally:
+        sim.listeners, sim.history = keep
+    clone.rng = random.Random(PROJECTION_SEED)
+    return clone
+
+
+def _run(sim: Simulation, rate: Dict[str, float]) -> List[Dict[str, Any]]:
+    """Close today, then live `rate` out to each horizon."""
+    sim = _fork(sim)
+    sim.advance_day()
+    out = []
+    done = 1
+    for h in HORIZONS:
+        replay(sim, rate, h - done, done - 1)
+        done = h
+        out.append({
+            "days": h,
+            "weights": {k: round(v, 4)
+                        for k, v in sim.current.snapshot().items()},
+            "consolidation": {f"{c.spec.src}->{c.spec.dst}": round(c.c, 4)
+                              for c in sim.current.conns},
+            "pathways": {k: round(v, 4)
+                         for k, v in sim.current.pathway_profile().items()},
+            "progress": round(sim.progress, 4),
+        })
+    return out
+
+
+def projection(sim: Simulation) -> Dict[str, Any]:
+    """Where today's habits lead if nothing changes, and where the same
+    life leads with the practice taken out.
+
+    The rates are the habit rates the Current tab already shows: what was
+    described, updated by what was logged. With nothing described, only
+    logs count, so a handful of logs projects a modest rate rather than
+    assuming they happen every day.
+    """
+    prof = sim.profile
+    start = (profile_rates(prof.get("answers", {}), notes_of(prof))
+             if prof else {})
+    rate = {k: v for k, v in habit_rates(start, sim.log, sim.day).items()
+            if v > 0 and k in EVENTS_BY_ID}
+    if not rate:
+        return {"rates": {}, "keep": [], "stop": []}
+    rest = {k: v for k, v in rate.items()
+            if EVENTS_BY_ID[k].category != "Practice"}
+    keep = _run(sim, rate)
+    return {
+        "basis": "described and logged" if prof else "logged",
+        "rates": {k: round(v, 2) for k, v in rate.items()},
+        "keep": keep,
+        "stop": keep if len(rest) == len(rate) else _run(sim, rest),
+    }
 
 
 def build(answers: Dict[str, str],
