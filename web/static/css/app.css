@@ -115,6 +115,7 @@ body.split #leftdock { display: none; }
 }
 .pin:hover .txt { color: #fff; border-color: var(--line-2); }
 .pin.faded { opacity: .22; }
+.pin.crowded { opacity: 0; pointer-events: none; }
 
 #hoverTip {
   position: absolute; pointer-events: none; z-index: 60;
@@ -419,14 +420,6 @@ body.split #leftdock { display: none; }
   outline: 2px solid var(--sel-line); outline-offset: 3px;
 }
 
-#visRead {
-  flex: 1 1 100%; min-width: 0; font-size: 10.5px; color: var(--txt-faint);
-  line-height: 1.45;
-}
-#visRead:not(:empty) { margin-top: 10px; }
-#visRead b { color: var(--txt); font-weight: 600; }
-#visRead i { font-style: normal; opacity: .75; }
-
 #visOut:not(:empty) {
   padding-top: 12px; border-top: 1px solid var(--line);
 }
@@ -457,6 +450,31 @@ body.split #leftdock { display: none; }
 .vis-part.on { border-color: var(--sel-line); color: var(--txt);
                background: var(--sel-2); }
 .vis-src { margin-top: 10px; font-size: 10px; color: var(--txt-faint); }
+#visOut .vis-parts { margin-top: 2px; padding-top: 0; border-top: 0; }
+.vis-head { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.vis-head .cur-group { flex: 1; margin: 0 0 4px; }
+.vis-replay {
+  font-size: 10.5px; padding: 2px 9px; border-radius: 20px;
+  color: var(--txt-faint); background: transparent;
+  border: 1px solid var(--line); cursor: pointer;
+}
+.vis-replay:hover { color: var(--txt); border-color: var(--line-2); }
+#visOut .eng-row { transition: background .3s, border-color .3s; }
+#visOut .eng-row.lit { background: var(--sel); border-color: var(--line-2); }
+.vis-alts { display: flex; flex-wrap: wrap; gap: 6px; }
+.vis-alt {
+  font-size: 11.5px; padding: 5px 12px; border-radius: 20px;
+  color: var(--txt-dim); background: rgba(255, 255, 255, .03);
+  border: 1px solid var(--line-2); cursor: pointer;
+  transition: border-color var(--fast), color var(--fast),
+              background var(--fast);
+}
+.vis-alt:hover, .vis-alt:focus-visible, .vis-alt.on, .vis-alt.pinned {
+  color: var(--txt); border-color: var(--sel-line); background: var(--sel);
+  outline: none;
+}
+.vis-alt-note { margin-top: 6px; font-size: 10.5px; line-height: 1.5;
+                color: var(--txt-faint); }
 
 /* ---- Current panel ------------------------------------------------------ */
 #composer { margin-bottom: 12px; }
@@ -507,6 +525,9 @@ body.split #leftdock { display: none; }
 }
 .eng-top { display: flex; align-items: center; gap: 9px; }
 .eng-name { width: 96px; font-size: 12px; color: var(--txt); }
+.eng-name small, .cmp-row .eng-top small {
+  display: block; font-size: 10px; line-height: 1.25; color: var(--txt-faint);
+}
 .eng-sw { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .eng-bar {
   position: relative; flex: 1; height: 5px; border-radius: 3px;
@@ -621,6 +642,34 @@ body.split #leftdock { display: none; }
              background: #e8eaee; transition: width .6s ease; }
 .hab-sub { font-size: 10px; color: var(--txt-faint); }
 .hab-row.away .hab-sub { color: var(--txt-dim); }
+
+/* ---- Change over time --------------------------------------------------- */
+/* Teal / amber match circuits.showDelta, so the panel and the tubes agree. */
+.pv-seg { margin: 4px 0 8px; }
+.pv-seg.sub { margin-top: 0; }
+.pv-seg.sub button { font-size: 10.5px; padding: 3px 4px; }
+.pv-out { margin-bottom: 10px; }
+.pv-out .tag { font-size: 8.5px; }
+.pv-up, .pv-down { display: inline-block; width: 10px; height: 3px;
+                   border-radius: 2px; vertical-align: middle; margin: 0 2px; }
+.pv-up { background: #5eead4; }
+.pv-down { background: #ffb454; }
+.pv-t { color: #5eead4 !important; }
+.pv-a { color: #ffb454 !important; }
+.pr-row { padding: 6px 8px; margin: 0 -8px; border-radius: 8px; cursor: pointer;
+          border: 1px solid transparent; }
+.pr-row:hover, .pr-row:focus-visible { background: var(--sel);
+                                       outline: none; }
+.pr-row.on { background: var(--sel); border-color: var(--line-2); }
+.pr-row .eng-sw { flex: none; }
+.pr-row .hab-sub b { color: var(--txt-dim); font-weight: 600; }
+.pr-bar { position: relative; height: 4px; margin: 5px 0 3px; border-radius: 2px;
+          background: rgba(255, 255, 255, .06); }
+.pr-bar::after { content: ''; position: absolute; left: 50%; top: -2px;
+                 bottom: -2px; width: 1px; background: var(--line-2); }
+.pr-bar i { position: absolute; top: 0; bottom: 0; transition: width .6s ease; }
+.pr-bar .gain { left: 50%; background: #5eead4; border-radius: 0 2px 2px 0; }
+.pr-bar .lost { right: 50%; background: #ffb454; border-radius: 2px 0 0 2px; }
 
 /* ---- "How you tend to react" ------------------------------------------- */
 .qz-q { border: 0; margin: 0 0 18px; padding: 0; }
