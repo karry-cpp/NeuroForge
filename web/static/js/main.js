@@ -77,7 +77,12 @@ const App = {
   focus: 'regulation',
   visSeq: 0,
   visParts: [], visFocus: null, visLevels: {},
+  visMoves: [], visAlts: [], visEvents: [], visPreview: null,
+  visReveal: Infinity, visTimers: [],
   curFocus: null, curNote: null, disputePart: null, intent: 'usual',
+  // Change over time: null | 'since' | a horizon in days.
+  pathView: null, pathFocus: null, pathDrawn: null, projScenario: 'keep',
+  projection: null, projLoading: null, projFailed: null, logSeq: 0,
   viewer2: null, camLead: 1,
   eventById: {}, nodeById: {}, cortexById: {}, cortexByIndex: {},
   structById: {},
@@ -165,6 +170,10 @@ async function boot() {
       onShow: (ids) => chatHighlight(ids),
       onLog: (id, intensity, note) => doLog(id, intensity, note),
       onClose: () => chatUnlabel(),
+      labelOf: (id) => {
+        const p = App.structById[id] || App.cortexById[id];
+        return p?.label || partLabel(id);
+      },
     });
     await App.chat.init();
 
@@ -232,6 +241,14 @@ function wire() {
     if (!hit) { clearSelection(); Panel.close(); return; }
     if (hit.kind === 'edge') { showEdge(hit.id); return; }
     V.select(hit);
+    markDockRow(hit.kind === 'structure'
+      ? $(`#structList .structrow[data-id="${hit.id}"]`)
+      : $(`#cortexList .structrow[data-cortex="${hit.id}"]`));
+    if (App.mode === 'anatomy') {
+      const id = hit.kind === 'structure'
+        ? hit.id : App.cortexByIndex[hit.id]?.id;
+      if (id) V.setPinFilter([id]);
+    }
     if (hit.kind === 'structure') showStructure(hit.id);
     else showCortex(hit.id, false, hit.fine, hit.network);
   });
@@ -450,9 +467,16 @@ function wireLookControls() {
 /** Drop the highlight and un-light whichever dock row pointed at it. */
 function clearSelection() {
   App.viewer.select(null);
-  $$('#cortexList .structrow, #structList .structrow, ' +
-     '#groupList .structrow, #netList .structrow')
-    .forEach(r => r.classList.remove('on'));
+  if (App.mode === 'anatomy') App.viewer.setPinFilter(null);
+  markDockRow(null);
+  $$('#netList .structrow').forEach(r => r.classList.remove('on'));
+}
+
+/** One selection across Systems, Cortex and Structures: lighting a row
+ *  in one section un-lights the others. */
+function markDockRow(row) {
+  $$('#cortexList .structrow, #structList .structrow, #groupList .structrow')
+    .forEach(r => r.classList.toggle('on', r === row));
 }
 
 /* Rebuild every dock list against the current focus. */
@@ -461,13 +485,15 @@ function buildDock() {
   buildCortexList();
   buildStructureList();
   buildNetworkList();
+  App.viewer.setPinScope(App.focus === 'all'
+    ? null : [...FOCUS.cortex, ...FOCUS.structures]);
 
   const hidden = (App.scene.structures || []).length
     + (App.scene.cortical_regions || []).length
     - (FOCUS.structures.length + FOCUS.cortex.length);
   $('#focusNote').textContent = App.focus === 'all'
     ? 'Every region in the atlas.'
-    : `${hidden} more still on the brain — click them directly, `
+    : `${hidden} more on the brain, unlabelled — click them directly, `
       + 'or switch to Full.';
 }
 
@@ -490,9 +516,16 @@ function buildGroupList() {  const groups = (App.scene.groups || [])
     row.onclick = () => {
       const g = groups.find(x => x.id === row.dataset.group);
       const already = row.classList.contains('on');
-      host.querySelectorAll('.structrow').forEach(x => x.classList.remove('on'));
-      if (already) { App.viewer.selectMany([], []); Panel.close(); return; }
-      row.classList.add('on');
+      markDockRow(already ? null : row);
+      if (already) {
+        App.viewer.selectMany([], []);
+        if (App.mode === 'anatomy') App.viewer.setPinFilter(null);
+        Panel.close();
+        return;
+      }
+      if (App.mode === 'anatomy') {
+        App.viewer.setPinFilter([...g.regions, ...g.structures]);
+      }
       showGroup(g);
     };
   });
@@ -536,7 +569,7 @@ function buildCortexList() {
     items.map(r => `
       <div class="structrow" data-cortex="${r.label_index}">
         <span class="sw" style="background:${r.color};color:${r.color}"></span>
-        <span class="nm">${r.short}</span>
+        <span class="nm">${r.label || r.short}</span>
         ${r.buried ? '<span class="tagmini" title="Folded inside a sulcus '
           + 'or on the medial wall - selecting it turns the surface to '
           + 'glass">buried</span>'
@@ -558,22 +591,21 @@ function buildCortexList() {
         return;
       }
       const already = row.classList.contains('on');
-      host.querySelectorAll('.structrow').forEach(x => x.classList.remove('on'));
-      if (already) { App.viewer.select(null); Panel.close(); return; }
-      row.classList.add('on');
+      markDockRow(already ? null : row);
+      if (already) {
+        App.viewer.select(null);
+        if (App.mode === 'anatomy') App.viewer.setPinFilter(null);
+        Panel.close();
+        return;
+      }
       App.viewer.select({ kind: 'cortex', id: li });
+      if (App.mode === 'anatomy') {
+        const id = App.cortexByIndex[li]?.id;
+        if (id) App.viewer.setPinFilter([id]);
+      }
       showCortex(li);
-      focusCortex(li);
     };
   });
-}
-
-function focusCortex(labelIndex) {
-  const r = App.cortexByIndex[labelIndex];
-  const c = r?.centroids?.[0];
-  if (!c) return;
-  // RAS (x,y,z) -> world (x, z, -y), matching viewer.root's rotation
-  App.viewer.controls.target.set(c[0], c[2], -c[1]);
 }
 
 function buildStructureList() {
@@ -589,7 +621,7 @@ function buildStructureList() {
         ? `<div class="docksub">${s.system}</div>` : ''}
       <div class="structrow" data-id="${s.id}">
         <span class="sw" style="background:${s.color};color:${s.color}"></span>
-        <span class="nm">${s.short}</span>
+        <span class="nm">${s.label || s.short}</span>
         <span class="eye" data-eye="${s.id}">◉</span>
       </div>`).join('');
 
@@ -611,19 +643,19 @@ function buildStructureList() {
         showStructure(id, true);
         return;
       }
+      const already = row.classList.contains('on');
+      markDockRow(already ? null : row);
+      if (already) {
+        App.viewer.select(null);
+        if (App.mode === 'anatomy') App.viewer.setPinFilter(null);
+        Panel.close();
+        return;
+      }
       App.viewer.select({ kind: 'structure', id });
+      if (App.mode === 'anatomy') App.viewer.setPinFilter([id]);
       showStructure(id);
-      focusStructure(id);
     };
   });
-}
-
-function focusStructure(id) {
-  const s = App.structById[id];
-  if (!s) return;
-  const c = s.centroids[0];
-  // RAS (x,y,z) -> world (x, z, -y), matching viewer.root's rotation
-  App.viewer.controls.target.set(c[0], c[2], -c[1]);
 }
 
 /* ======================================================================= */
@@ -696,7 +728,7 @@ function setViewState(s) {
   $('#composer').classList.toggle('hidden', s === 'compare');
   $('#visBody').classList.toggle('hidden', !vis);
   $('#visReset').classList.toggle('hidden', !vis);
-  App.viewer.setStrongGlow(vis);
+  App.viewer.setStrongGlow(vis || s === 'current');
   $('#curPanel').classList.toggle('hidden', vis);
   if (prev !== s && DEFAULT_INTENT[s]) setIntent(DEFAULT_INTENT[s]);
   // Tubes are the Circuits mode's subject. Here the subject is parts, and
@@ -1356,12 +1388,18 @@ function selectState(s) {
 
 function clearVisualise() {
   App.visSeq++;                          // strand any reply still in flight
+  stopMoment();
+  endPaths();
   App.visParts = [];
   App.visFocus = null;
-  $('#visRead').textContent = '';
+  App.visMoves = [];
+  App.visAlts = [];
+  App.visEvents = [];
+  App.visPreview = null;
   $('#visOut').innerHTML = '';
   clearSelection();
   App.viewer.clearGlow();
+  App.viewer.setPinBadges(null);
   const vis = App.viewState === 'visualise';
   App.viewer.setPinFilter(vis ? [] : null);
   if (vis) App.viewer.setStructureCast(VIS_CAST);
@@ -1401,7 +1439,7 @@ function renderReading() {
   if (s === 'compare') { renderCompare(); return; }
   const target = s === 'target';
   const rows = readingRows();
-  paintEngagement(App.viewer, rows, focusIds());
+  paintEngagement(App.viewer, rows, focusIds(), !target);
   $('#curPanel').innerHTML = target
     ? targetPanelHtml(rows) : currentPanelHtml(rows, !!App.state?.profile);
   wireReadingPanel();
@@ -1522,6 +1560,19 @@ function wireReadingPanel() {
   $$('#curPanel [data-quiz]').forEach(b =>
     b.onclick = () => openQuiz(b.dataset.quiz || 'current'));
   const night = $('#curPanel [data-night-close]');
+  $$('#curPanel [data-pview]').forEach(b =>
+    b.onclick = () => setPathView(b.dataset.pview));
+  $$('#curPanel [data-scen]').forEach(b => b.onclick = () => {
+    App.projScenario = b.dataset.scen;
+    renderReading();
+  });
+  $$('#curPanel .pr-row').forEach(r => pressable(r, () => {
+    const id = r.dataset.pathway;
+    App.pathFocus = App.pathFocus === id ? null : id;
+    if (App.pathView == null) App.pathView = 'since';
+    App.pathDrawn = null;
+    renderReading();
+  }));
   if (night) night.onclick = () => {
     App.overnightSeen = App.state.day;
     renderReading();
@@ -1559,11 +1610,12 @@ function wireReadingPanel() {
  * Part colours stay the part's own, so the brain reads the same as in every
  * other view. More engaged parts come forward, less engaged ones stay
  * visible but faint, typical ones drop to glass, and the arrows on the
- * labels say which is which. No steady glow: here glow means "just changed"
- * (playEngagementChange), and in Visualise "active right now". Clicking a
- * part (or a note) brings it forward without moving the camera.
+ * labels say which is which. With `glow` (the Current tab) each more
+ * engaged part also glows in its own colour, graded by its score with the
+ * Visualise formula; less engaged parts get a faint, pale glow. Clicking
+ * a part (or a note) brings it forward without moving the camera.
  */
-function paintEngagement(V, rows, focusIds = []) {
+function paintEngagement(V, rows, focusIds = [], glow = false) {
   const lit = rows.filter(r => r.level !== 'typical');
   const focus = new Set(focusIds.filter(id => lit.some(r => r.part === id)));
   const isForward = (r) => focus.size ? focus.has(r.part) : r.level === 'more';
@@ -1584,14 +1636,39 @@ function paintEngagement(V, rows, focusIds = []) {
   }
 
   V.clearGlow();
+  App.engGlow = glow ? engGlowMap(lit) : {};
   if (lit.length) {
     V.selectMany(labels, structs, null);
     V.setEmphasis(up.labels, up.structs, true);
   } else {
     V.selectMany([], []);
   }
+  for (const [part, g] of Object.entries(App.engGlow)) setPartGlow(V, part, g);
+  const less = glow ? lit.filter(r => r.level === 'less') : [];
+  V.setPale(
+    less.filter(r => App.cortexById[r.part])
+      .map(r => App.cortexById[r.part].label_index),
+    less.filter(r => App.structById[r.part]).map(r => r.part));
   V.setPinFilter(lit.map(r => r.part));
   V.setPinBadges(badges);
+}
+
+/** More engaged parts by score, scaled so the most engaged gets full
+ *  Visualise glow; the square root keeps mild ones visible. Less engaged
+ *  parts get a pale glow that fades the further below typical they are. */
+const PALE_GLOW_MAX = 0.25;
+function engGlowMap(lit) {
+  const top = (lvl) => Math.max(1e-6, ...lit
+    .filter(r => r.level === lvl).map(r => Math.abs(r.score)));
+  const more = top('more'), less = top('less');
+  return Object.fromEntries(lit.map(r => [r.part, r.level === 'more'
+    ? VIS_GLOW_MIN + VIS_GLOW_SPAN * Math.sqrt(Math.max(0, r.score) / more)
+    : PALE_GLOW_MAX * (1 - 0.6 * Math.sqrt(Math.abs(r.score) / less))]));
+}
+
+function setPartGlow(V, part, g) {
+  if (App.structById[part]) V.setStructureGlow(part, g);
+  else if (App.cortexById[part]) V.setRegionGlow(App.cortexById[part].label_index, g);
 }
 
 // Glow by order of change, not size: scores move ~0.05, which reads as
@@ -1632,7 +1709,7 @@ function playEngagementChange(beforeRows, eventIds) {
   const at = (ms, fn) => anim.timers.push(setTimeout(fn, ms));
   const mix = Object.fromEntries(after.map(r =>
     [r.part, old[r.part] || { ...r, level: 'typical', score: 0 }]));
-  const paintMix = () => paintEngagement(V, Object.values(mix), []);
+  const paintMix = () => paintEngagement(V, Object.values(mix), [], true);
   const tag = (part, on) => $$(`#curPanel .cur-fx em[data-part="${part}"]`)
     .forEach(e => e.classList.toggle('lit', on));
 
@@ -1658,19 +1735,23 @@ function playEngagementChange(beforeRows, eventIds) {
   }));
   const end = t0 + moved.length * ENG_STEP_MS + 900;
   at(end, () => {
-    paintEngagement(V, after, focusIds());
+    paintEngagement(V, after, focusIds(), true);
     for (const g of Object.values(anim.glow)) g.fade = performance.now();
     moved.forEach(x => tag(x.r.part, false));
   });
-  at(end + 1000, stopEngAnim);
+  at(end + 1000, () => {
+    stopEngAnim();
+    paintEngagement(V, after, focusIds(), true);
+  });
 
   const frame = () => {
     const now = performance.now();
     for (const [part, g] of Object.entries(anim.glow)) {
       const k = Math.min(1, (now - g.start) / 350)
         * (g.fade ? Math.max(0, 1 - (now - g.fade) / 900) : 1);
-      if (App.structById[part]) V.setStructureGlow(part, g.peak * k);
-      else V.setRegionGlow(App.cortexById[part].label_index, (g.peak + 0.2) * k);
+      const peak = App.structById[part] ? g.peak : g.peak + 0.2;
+      // The flash rides on the steady glow, never below it.
+      setPartGlow(V, part, Math.max(App.engGlow?.[part] ?? 0, peak * k));
     }
     anim.raf = requestAnimationFrame(frame);
   };
@@ -1798,7 +1879,25 @@ function trendOf(part) {
 const ENG_FULL = 0.5;
 
 const partOf = (id) => App.structById[id] || App.cortexById[id];
-const nameOf = (r) => escHtml(partOf(r.part).short);
+
+/** Plain name plus the anatomical one, e.g. "Value (vmPFC)". The sidebar
+ *  label ends in the anatomical name; skip it when the plain name is it. */
+function partNames(id) {
+  const p = partOf(id);
+  const plain = p?.short || p?.name || id;
+  const anat = /\(([^)]+)\)\s*$/.exec(p?.label || '')?.[1];
+  return [plain, anat && anat.toLowerCase() !== plain.toLowerCase() ? anat : ''];
+}
+function fullName(id) {
+  const [plain, anat] = partNames(id);
+  return anat ? `${plain} (${anat})` : plain;
+}
+/** For narrow name columns: the anatomical name on its own small line. */
+function nameHtml(id) {
+  const [plain, anat] = partNames(id);
+  return escHtml(plain) + (anat ? `<small>${escHtml(anat)}</small>` : '');
+}
+const nameOf = (r) => escHtml(fullName(r.part));
 
 /** A reason that came from something on screen links back to it. */
 function refLink(text, ref = '') {
@@ -1860,7 +1959,7 @@ function engRow(r, target = false) {
          data-part="${r.part}">
       <div class="eng-top">
         <span class="eng-sw" style="background:${p.color}"></span>
-        <span class="eng-name">${escHtml(p.short || p.name)}</span>
+        <span class="eng-name">${nameHtml(r.part)}</span>
         <span class="eng-bar"><i style="width:${w.toFixed(1)}%"></i></span>
         ${tr ? tr.svg : ''}
         <span class="eng-arrow">${r.level === 'more' ? '\u25b2' : '\u25bc'}</span>
@@ -1898,7 +1997,7 @@ function notesHtml(notes, delAttr, emptyText) {
           <span>read as ${escHtml(read)}</span>
           ${fx.length ? `<div class="cur-fx">${fx.map(e => `
             <em class="${e.dir}" data-part="${e.part}"><i style="background:${partOf(e.part).color}"></i>${
-              escHtml(partOf(e.part).short)} ${
+              escHtml(fullName(e.part))} ${
               e.dir === 'more' ? '\u25b2' : '\u25bc'}</em>`).join('')}</div>`
             : ''}</div>
         <button class="cur-x" ${delAttr === 'data-del' ? 'data-edit'
@@ -1972,7 +2071,7 @@ function comparePanelHtml(cur, tgt) {
         <div class="cmp-row" data-part="${r.id}">
           <span class="eng-top"><span class="eng-sw"
             style="background:${partOf(r.id).color}"></span>
-            ${escHtml(partOf(r.id).short)}</span>
+            <span>${nameHtml(r.id)}</span></span>
           <span>${mark(r.c)}</span><span>${mark(r.t)}</span>
           <span class="gap ${label(r.gap) === 'on track' ? 'on' : ''}">${
             label(r.gap)}</span>
@@ -2029,6 +2128,7 @@ function currentPanelHtml(rows, hasProfile) {
           ? 'Edit situations' : 'Answer situations'}</button>
     </div>
     ${hasProfile ? habitsHtml(App.state?.habits || []) : ''}
+    ${changeHtml()}
     ${hasProfile ? `
       <details class="cur-base">
         <summary>What counts as "typical"?</summary>
@@ -2098,6 +2198,255 @@ function habitsHtml(rows) {
     <div class="hab-foot">Assumes that on a day you log, you log what
       happened. Only the situations you log about are updated; the rest keep
       what you described.</div>`;
+}
+
+/* ---- Change over time ---------------------------------------------------
+ * One log moves the model a point or two, too little to see. These views
+ * show change at true scale by showing a lot of it: everything since day 0,
+ * or today's habits run forward. */
+const HORIZONS = [30, 90, 180];
+const pts = (x) => `${x >= 0 ? '+' : '\u2212'}${Math.abs(x * 100).toFixed(1)}`;
+const projKey = (s) => `${s.day}|${s.log_count}|${s.progress}|${s.alignment}`;
+const progWords = (x) => `${progressBand(x * 100)} (~${Math.round(x * 20) * 5}%)`;
+
+async function ensureProjection() {
+  const k = projKey(App.state);
+  if (App.projection?.key === k) return App.projection;
+  const p = await API.projection();
+  p.key = k;
+  if (App.state && projKey(App.state) === k) App.projection = p;
+  return p;
+}
+
+function refreshProjection() {
+  const k = projKey(App.state);
+  if (App.projLoading || App.projFailed === k) return;
+  App.projLoading = ensureProjection()
+    .catch(() => { App.projFailed = k; toast('Could not run the projection'); })
+    .finally(() => {
+      App.projLoading = null;
+      if (typeof App.pathView === 'number') renderReading();
+    });
+}
+
+const projFresh = () => App.state && App.projection?.key === projKey(App.state);
+
+function projAt(h, scen = App.projScenario) {
+  if (!projFresh()) return null;
+  const p = App.projection;
+  return (scen === 'stop' ? p.stop : p.keep).find(x => x.days === h) || null;
+}
+
+function changeHtml() {
+  const s = App.state;
+  const rows = s?.practice || [];
+  if (!rows.length && !s?.log_count && !s?.profile) return '';
+  const v = App.pathView;
+  const btn = (val, label) => `<button data-pview="${val}"${
+    String(v) === String(val) ? ' class="active"' : ''}>${label}</button>`;
+  const most = Math.max(1e-6, ...rows.map(r => Math.max(r.gained, r.lost)));
+  return `
+    <div class="cur-group">CHANGE OVER TIME <span class="tag model">MODEL</span></div>
+    <div class="segmented pv-seg">${btn('since', 'Since day 0')}${
+      HORIZONS.map(h => btn(h, `In ${h} days`)).join('')}</div>
+    <div class="pv-out">${pviewHtml()}</div>
+    ${rows.length ? `
+      <div class="hab-intro">Each pathway since day 0. A log counts
+        <b>toward</b> when its rule pushes the pathway toward your aim and
+        <b>away</b> when it pushes back. Points are the model's 0-1 scale
+        \u00d7100. Click one to show only it.</div>
+      ${rows.map(r => practiceRow(r, most)).join('')}` : ''}`;
+}
+
+function practiceRow(r, most) {
+  const w = (x) => (Math.min(1, x / most) * 50).toFixed(1);
+  const week = r.toward_week || r.away_week
+    ? ` \u00b7 this week ${r.toward_week} / ${r.away_week}` : '';
+  return `
+    <div class="pr-row${App.pathFocus === r.pathway ? ' on' : ''}"
+         data-pathway="${r.pathway}" role="button" tabindex="0">
+      <div class="hab-top">
+        <span class="eng-sw" style="background:${r.color}"></span>
+        <span class="hab-name">${escHtml(r.label)}</span>
+        <span class="hab-num"><b>${r.toward}</b> <i>toward</i> \u00b7
+          <b>${r.away}</b> <i>away</i></span>
+      </div>
+      <div class="pr-bar" title="left: lost to logs that pushed back \u00b7 right: gained from logs">
+        <i class="lost" style="width:${w(r.lost)}%"></i>
+        <i class="gain" style="width:${w(r.gained)}%"></i>
+      </div>
+      <div class="hab-sub">logs ${pts(r.gained)} / ${pts(-r.lost)} \u00b7
+        nights ${pts(r.nights)} \u00b7 net <b>${pts(r.net)}</b> toward your aim
+        \u00b7 ${Math.round(r.consolidated * 100)}% set${week}</div>
+    </div>`;
+}
+
+function pviewHtml() {
+  const s = App.state, v = App.pathView;
+  if (v == null) {
+    return `<div class="hab-intro">Pick one to draw it on the brain at true
+      scale - no enlarging.</div>`;
+  }
+  if (v === 'since') {
+    return `<div class="hab-intro">Day 0 \u2192 day ${s.day}: every log and
+      every night added up. <i class="pv-up"></i> stronger
+      <i class="pv-down"></i> weaker, thickness = size of the change. One log
+      is a point or two; this is all of them.</div>`;
+  }
+  if (!projFresh()) return '<div class="hab-intro">Running the model forward\u2026</div>';
+  const p = App.projection;
+  if (!p.keep.length) {
+    return `<div class="hab-intro">Nothing to run forward yet. Log a few
+      things, or describe how you react, and this shows where that leads.</div>`;
+  }
+  const keep = projAt(v, 'keep'), stop = projAt(v, 'stop');
+  const at = projAt(v);
+  const seg = (k, label) => `<button data-scen="${k}"${
+    App.projScenario === k ? ' class="active"' : ''}>${label}</button>`;
+  const moved = Object.entries(at.pathways)
+    .map(([id, then]) => ({ id, then, d: then - (s.pathways[id] ?? then) }))
+    .filter(x => Math.abs(x.d) >= 0.005)
+    .sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 4);
+  const label = (id) => App.model.pathways.find(x => x.id === id)?.label || id;
+  const toward = (x) => x.d * ((s.pathway_targets[x.id] ?? 0) - (s.pathways[x.id] ?? 0)) > 0;
+  const rates = Object.entries(p.rates).sort((a, b) => b[1] - a[1]).slice(0, 5)
+    .map(([id, r]) => `${escHtml(App.eventById[id]?.label || id)} ${perWeek(r)}`)
+    .join(' \u00b7 ');
+  return `
+    <div class="segmented pv-seg sub">${seg('keep', 'Keep this up')}${
+      seg('stop', 'Stop practising')}</div>
+    <div class="cur-night-row"><span>Now</span><span>${progWords(s.progress)}</span></div>
+    <div class="cur-night-row"><span>In ${v} days, keep this up</span>
+      <span>${progWords(keep.progress)}</span></div>
+    <div class="cur-night-row"><span>In ${v} days, practice stopped</span>
+      <span>${progWords(stop.progress)}</span></div>
+    ${moved.map(x => `
+      <div class="cur-night-row"><span>${escHtml(label(x.id))}</span>
+        <span class="${toward(x) ? 'pv-t' : 'pv-a'}">${x.d > 0 ? 'stronger'
+          : 'weaker'} by ${Math.abs(x.d * 100).toFixed(1)} \u00b7 ${
+          toward(x) ? 'toward' : 'away from'} your aim</span></div>`).join('')}
+    <div class="hab-intro">Runs your habits a week (${rates}) through the same
+      rules, on a copy - nothing is recorded. "Stop practising" keeps
+      everything else and takes the practice out. Based on what was
+      ${p.basis}. One fixed draw of luck; real weeks vary more.</div>`;
+}
+
+function pathViewEdges(moved) {
+  const part = App.curFocus;
+  const nodes = part ? App.model.nodes
+    .filter(n => n.structure === part || n.cortex === part).map(n => n.id) : null;
+  return App.model.edges
+    .filter(e => (!App.pathFocus || e.pathway === App.pathFocus)
+      && (!nodes || nodes.includes(e.src) || nodes.includes(e.dst))
+      && moved(e.id))
+    .map(e => e.id);
+}
+
+/** Held until switched off: Since day 0, or a projected day. */
+function drawPathView() {
+  const s = App.state, C = App.circuits;
+  if (App.pathView === 'since') {
+    const a = s.start_weights, b = s.weights;
+    const ids = pathViewEdges(id => Math.abs((b[id] ?? 0) - (a[id] ?? 0)) > 0.002);
+    C.spotlight(ids.length ? ids : null);
+    C.setCores(null);
+    C.showDelta(a, b);
+    return;
+  }
+  if (C.deltaMode && !App.compareOn) C.showDelta(null, null);
+  const p = projAt(App.pathView);
+  if (!p) {
+    if (!projFresh()) refreshProjection();
+    C.spotlight(null);
+    return;
+  }
+  const now = s.weights;
+  const ids = pathViewEdges(id => Math.abs((p.weights[id] ?? 0) - (now[id] ?? 0)) > 0.005);
+  if (!ids.length) { C.spotlight(null); return; }
+  C.spotlight(ids);
+  const key = `${App.pathView}|${App.projScenario}|${App.projection.key}|${ids}`;
+  if (App.pathDrawn !== key) {
+    App.pathDrawn = key;
+    C.animate(now, p.weights, 1.8);
+  } else C.update(p.weights);
+  C.setCores(p.consolidation, p.weights);
+}
+
+function leavePathView() {
+  App.pathView = null;
+  App.pathFocus = null;
+  App.pathDrawn = null;
+  if (!App.compareOn) App.circuits.showDelta(null, null);
+}
+
+function setPathView(v) {
+  const val = v === 'since' ? v : Number(v);
+  if (App.pathView === val) leavePathView();
+  else { App.pathView = val; App.pathDrawn = null; }
+  if (App.pathView == null) App.circuits.spotlight(null);
+  renderReading();
+}
+
+/** Under a log's result: its place in the tally, and where the habit leads. */
+async function fillAhead(ev, deltas, s) {
+  const seq = ++App.logSeq;
+  const out = [];
+  const acts = ev.activations || {};
+  const touched = (s.practice || []).filter(r => acts[r.pathway])
+    .sort((a, b) => Math.abs(acts[b.pathway]) - Math.abs(acts[a.pathway]))
+    .slice(0, 3);
+  for (const r of touched) {
+    const name = escHtml(r.label);
+    if (acts[r.pathway] * r.sign > 0) {
+      out.push(`<div class="cur-night-row"><span>${name}</span>
+        <span>log #${r.toward} toward your aim</span></div>`);
+      continue;
+    }
+    // Set-back measured in the currency of practice, so a slip reads as
+    // ground lost rather than as failure.
+    const d = Math.abs(deltas.find(x => x.pathway === r.pathway)?.delta || 0);
+    const per = r.toward >= 3 ? r.gained / r.toward : 0;
+    const n = per > 0 ? Math.round(d / per) : 0;
+    out.push(`<div class="cur-night-row"><span>${name}</span>
+      <span class="pv-a">pushed back${n >= 1 ? ` about ${n} ${
+        n > 1 ? "logs'" : "log's"} worth` : ''} (${r.away} so far)</span></div>`);
+  }
+  const paint = (ahead) => {
+    const el = $('#logAhead');
+    if (!el || seq !== App.logSeq) return;
+    el.innerHTML = out.length || ahead ? `
+      <div class="p-sec">
+        <div class="p-h" style="color:var(--txt-faint)">WHERE THIS LEADS
+          <span class="tag model">MODEL</span></div>
+        ${out.join('')}${ahead}
+      </div>` : '';
+    const b = el.querySelector('[data-ahead]');
+    if (b) b.onclick = () => {
+      LogDock.close();
+      if (App.mode !== 'simulation') setMode('simulation');
+      if (App.viewState !== 'current') selectState('current');
+      setPathView(90);
+      $('#curPanel .pv-seg')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    };
+  };
+  paint('');
+  let p;
+  try { p = await ensureProjection(); } catch { return; }
+  if (!p.keep.length) return;
+  const h = 90;
+  const keep = p.keep.find(x => x.days === h), stop = p.stop.find(x => x.days === h);
+  const rate = p.rates[ev.id];
+  paint(`
+    ${rate ? `<div class="hab-intro">At about ${perWeek(rate)} a week, the
+      next ${h} days hold roughly ${Math.round(rate * h / 7)} more of these.
+      This one is a single step; the path is all of them.</div>` : ''}
+    <div class="cur-night-row"><span>Now</span><span>${progWords(s.progress)}</span></div>
+    <div class="cur-night-row"><span>In ${h} days, keep this up</span>
+      <span>${progWords(keep.progress)}</span></div>
+    <div class="cur-night-row"><span>In ${h} days, practice stopped</span>
+      <span>${progWords(stop.progress)}</span></div>
+    <button class="cur-ghost" data-ahead style="margin-top:8px">Show on the
+      brain</button>`);
 }
 const joinAnd = (xs) => xs.length < 2 ? xs.join('')
   : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
@@ -2190,9 +2539,8 @@ async function runVisualise(text) {
   // Pressing Explain twice can put two replies in the air. Only the newest
   // is allowed to touch the brain.
   const seq = ++App.visSeq;
-  const read = $('#visRead'), out = $('#visOut'), go = $('#composerGo');
+  const out = $('#visOut'), go = $('#composerGo');
   go.disabled = true;
-  read.textContent = '';
   out.innerHTML = '';
 
   explainVisualise(text, [], seq).finally(() => {
@@ -2213,33 +2561,180 @@ async function explainVisualise(text, eventIds, seq) {
   }
   if (seq !== App.visSeq) return;
 
-  const evs = a.events || [];
-  $('#visRead').textContent = evs.length
-    ? `Based on: ${evs.map(e => e.label.toLowerCase()).join(', ')}` : '';
-
   const parts = [...(a.structures || []), ...(a.regions || [])]
     .filter(id => App.structById[id] || App.cortexById[id]);
 
   App.visLevels = a.levels || {};
+  App.visMoves = (a.moves || []).filter(m => partOf(m.part));
+  App.visAlts = a.alternatives || [];
+  App.visEvents = (a.events || []).map(e => e.id);
+  App.visPreview = null;
+  for (const m of App.visMoves) if (!parts.includes(m.part)) parts.push(m.part);
+  const moved = new Set(App.visMoves.map(m => m.part));
+  const others = parts.filter(id => !moved.has(id));
   visualiseParts(parts);
 
   out.innerHTML = `
     <p class="vis-prose">${linkifyParts(a.text, parts)}</p>
-    ${parts.length ? `<div class="vis-parts">${parts.map(id =>
+    ${App.visMoves.length ? `
+      <div class="vis-head">
+        <span class="cur-group">IN THIS MOMENT \u00b7 IN THIS MODEL</span>
+        <button class="vis-replay" title="Play the circuit again">\u21bb Replay</button>
+      </div>
+      ${App.visMoves.map(momentRow).join('')}` : ''}
+    ${others.length ? `
+      <div class="cur-group">${App.visMoves.length ? 'ALSO INVOLVED' : 'INVOLVED'}</div>
+      <div class="vis-parts">${others.map(id =>
         `<button class="vis-part" data-part="${id}">${partLabel(id)}</button>`
-      ).join('')}</div>` : ''}`;
+      ).join('')}</div>` : ''}
+    ${App.visAlts.length ? `
+      <div class="cur-group">TRY A DIFFERENT RESPONSE</div>
+      <div class="vis-alts">${App.visAlts.map((x, i) =>
+        `<button class="vis-alt" data-alt="${i}">${escHtml(tryLabel(x))}</button>`
+      ).join('')}</div>
+      <div class="vis-alt-note" id="visAltNote">Point at one to see what it
+        would push instead. Nothing is recorded.</div>` : ''}`;
 
   // Every part stays lit; clicking one brings it forward and fades the rest.
   // Clicking it again, or empty space, puts them all back on equal terms.
-  $$('#visOut .vis-part').forEach(b => b.onclick = () => {
-    const id = b.dataset.part;
-    focusVisualisePart(App.visFocus === id ? null : id);
+  $$('#visOut .vis-part, #visOut .eng-row').forEach(b => {
+    const go = () => {
+      const id = b.dataset.part;
+      focusVisualisePart(App.visFocus === id ? null : id);
+    };
+    if (b.classList.contains('eng-row')) pressable(b, go); else b.onclick = go;
   });
+  const replay = $('#visOut .vis-replay');
+  if (replay) replay.onclick = playMoment;
+  $$('#visOut .vis-alt').forEach(b => {
+    const alt = App.visAlts[Number(b.dataset.alt)];
+    const on = () => previewResponse(alt, b);
+    const off = () => { if (!b.classList.contains('pinned')) previewResponse(null); };
+    b.onmouseenter = on;
+    b.onfocus = on;
+    b.onmouseleave = off;
+    b.onblur = off;
+    // Touch has no hover: a tap keeps the preview until tapped again.
+    b.onclick = () => {
+      const pin = !b.classList.contains('pinned');
+      $$('#visOut .vis-alt').forEach(x => x.classList.remove('pinned'));
+      b.classList.toggle('pinned', pin);
+      previewResponse(pin ? alt : null, pin ? b : null);
+    };
+  });
+  playMoment();
+}
+
+const TRY_LABELS = {
+  name_emotion: 'Name the feeling', pause: 'Pause first',
+  disengage: 'Let the thought go', reappraisal: 'Reframe it',
+  mindful_practice: 'Slow breathing', regulated_success: 'Stay steady',
+};
+const tryLabel = (x) => TRY_LABELS[x.event] || x.label;
+
+// Bars use a square root: the amygdala's push dwarfs everything else.
+const momentBar = (m) => Math.sqrt(m.strength) * 50;
+
+function momentRow(m) {
+  const p = partOf(m.part);
+  return `
+    <div class="eng-row ${m.dir}" role="button" tabindex="0"
+         data-part="${m.part}">
+      <div class="eng-top">
+        <span class="eng-sw" style="background:${p.color}"></span>
+        <span class="eng-name">${nameHtml(m.part)}</span>
+        <span class="eng-bar"><i style="width:${momentBar(m).toFixed(1)}%"></i></span>
+        <span class="eng-arrow">${m.dir === 'more' ? '\u25b2' : '\u25bc'}</span>
+      </div>
+      ${m.meaning ? `<div class="eng-why">${escHtml(cap(m.meaning))}.</div>` : ''}
+    </div>`;
+}
+
+/** The connections a set of events strengthens and weakens, by edge id. */
+function momentEdges(eventIds) {
+  const amt = {};
+  for (const id of eventIds) {
+    for (const [pid, a] of Object.entries(App.eventById[id]?.activations || {})) {
+      amt[pid] = (amt[pid] || 0) + a;
+    }
+  }
+  const up = [], down = [];
+  for (const e of App.model.edges) {
+    const a = amt[e.pathway];
+    if (a && Math.abs(a) >= 0.05) (a > 0 ? up : down).push(e.id);
+  }
+  return { up, down };
+}
+
+/** Draw the moment's circuit: strengthened routes bright with pulses running
+ *  down them, weakened ones thin and dim. `hold` 0 keeps it up. */
+function showCircuit(eventIds, hold = 5200) {
+  const { up, down } = momentEdges(eventIds);
+  clearTimeout(App.pathTimer);
+  App.pathTimer = null;
+  if (!up.length && !down.length) { App.circuits.spotlight(null); return 0; }
+  const w = {};
+  for (const id of up) w[id] = 0.8;
+  for (const id of down) w[id] = 0.15;
+  App.circuits.spotlight([...up, ...down]);
+  App.circuits.update(w);
+  App.circuits.cascade(up, { stagger: 0.13, speed: 1.35 });
+  if (hold) App.pathTimer = setTimeout(endPaths, hold);
+  return up.length + down.length;
+}
+
+function stopMoment() {
+  App.visTimers.forEach(clearTimeout);
+  App.visTimers = [];
+  App.visReveal = Infinity;
+}
+
+/** The circuit first, then each part takes its arrow, biggest push first. */
+function playMoment() {
+  stopMoment();
+  if (!App.visMoves.length) return;
+  App.visPreview = null;
+  $$('#visOut .vis-alt').forEach(x => x.classList.remove('pinned'));
+  const t0 = showCircuit(App.visEvents) ? 900 : 0;
+  App.visReveal = 0;
+  applyVisualise(App.visFocus);
+  App.visMoves.forEach((m, i) => App.visTimers.push(setTimeout(() => {
+    App.visReveal = i + 1;
+    applyVisualise(App.visFocus);
+    $(`#visOut .eng-row[data-part="${m.part}"]`)?.classList.add('lit');
+  }, t0 + i * 170)));
+  App.visTimers.push(setTimeout(() => {
+    App.visReveal = Infinity;
+    $$('#visOut .eng-row.lit').forEach(r => r.classList.remove('lit'));
+  }, t0 + App.visMoves.length * 170 + 900));
+}
+
+/** Show what a different response would push instead, or null to go back. */
+function previewResponse(alt, btn = null) {
+  stopMoment();
+  App.visPreview = alt;
+  $$('#visOut .vis-alt').forEach(x => x.classList.toggle('on', x === btn));
+  const note = $('#visAltNote');
+  if (alt) {
+    for (const m of alt.moves) {
+      if (partOf(m.part) && !App.visParts.includes(m.part)) App.visParts.push(m.part);
+    }
+    showCircuit([alt.event], 0);
+    if (note) note.textContent = `${tryLabel(alt)}: ` + alt.moves
+      .filter(m => partOf(m.part)).slice(0, 4)
+      .map(m => `${partLabel(m.part)} ${m.dir === 'more' ? '\u25b2' : '\u25bc'}`)
+      .join(' \u00b7 ') + ' (in this model)';
+  } else {
+    endPaths();
+    if (note) note.textContent = 'Point at one to see what it would push '
+      + 'instead. Nothing is recorded.';
+  }
+  applyVisualise(App.visFocus);
 }
 
 // The camera stays put: re-aiming it at the part moved the whole brain.
 function focusVisualisePart(id) {
-  $$('#visOut .vis-part').forEach(x =>
+  $$('#visOut .vis-part, #visOut .eng-row').forEach(x =>
     x.classList.toggle('on', !!id && x.dataset.part === id));
   applyVisualise(id);
 }
@@ -2293,33 +2788,47 @@ function visualiseParts(parts) {
   applyVisualise();
 }
 
-/** (Re)apply the Visualise highlight; `focus` glows a little brighter. */
+/** (Re)apply the Visualise highlight. Parts the moment pushes up come
+ *  forward and glow by how hard; parts it pushes down go faint; `focus`
+ *  brings one part forward alone. A response preview swaps in its pushes. */
 function applyVisualise(focus = null) {
   const parts = App.visParts;
   App.visFocus = focus;
   App.viewer.setPinFilter(parts);
   if (!parts.length) return;
 
+  const moves = (App.visPreview?.moves || App.visMoves)
+    .slice(0, App.visReveal);
+  const dir = Object.fromEntries(moves.map(m => [m.part, m]));
   const labels = new Map(), structs = [];
   for (const id of parts) {
     if (App.structById[id]) structs.push(id);
     else if (App.cortexById[id]) labels.set(id, App.cortexById[id].label_index);
   }
+  const forward = (id) => focus ? id === focus : dir[id]?.dir !== 'less';
+  // Focus only isolates a part; its glow still says how hard it is pushed.
+  const glow = (id) => {
+    if (dir[id]) return dir[id].dir === 'more'
+      ? VIS_GLOW_MIN + VIS_GLOW_SPAN * Math.sqrt(dir[id].strength) : 0;
+    return visGlow(id, null);
+  };
 
   // Rules can name parts outside the cast (thalamus, NAcc, VTA); a hidden
   // mesh would take the highlight and show nothing.
   App.viewer.setStructureCast([...new Set([...VIS_CAST, ...structs])]);
   App.viewer.selectMany([...labels.values()], structs, null);
   App.viewer.setEmphasis(
-    labels.has(focus) ? [labels.get(focus)] : [],
-    structs.includes(focus) ? [focus] : [], false, true);
+    [...labels].filter(([id]) => forward(id)).map(([, li]) => li),
+    structs.filter(forward), true, !!focus);
   App.viewer.clearGlow();
+  App.viewer.setPinBadges(Object.fromEntries(moves.map(m =>
+    [m.part, m.dir === 'more' ? '\u25b2' : '\u25bc'])));
 
   for (const id of structs) {
-    App.viewer.setStructureGlow(id, visGlow(id, focus));
+    if (forward(id)) App.viewer.setStructureGlow(id, glow(id));
   }
   for (const [id, label] of labels) {
-    App.viewer.setRegionGlow(label, visGlow(id, focus));
+    if (forward(id)) App.viewer.setRegionGlow(label, glow(id));
   }
 }
 
@@ -2372,6 +2881,8 @@ function highlightAnalysis(a) {
 async function doLog(eventId, intensity = 1.0, note = '') {
   const ev = App.eventById[eventId];
   endPreview();
+  // The fork is drawn on live weights; a held view would hide it.
+  if (App.pathView != null) leavePathView();
   const before = { ...(App.state?.weights || {}) };
   const habitBefore = App.state?.habits?.find(h => h.event === eventId);
   const res = await API.log(eventId, { intensity, note });
@@ -2383,6 +2894,7 @@ async function doLog(eventId, intensity = 1.0, note = '') {
   // Rendered in place: the cascade above is playing on the brain right now,
   // and a dialog would be sitting on top of it.
   LogDock.set(resultHtml(res.applied, res.deltas, res.state));
+  fillAhead(ev, res.deltas, res.state);
   $('#againBtn').onclick = openTrigger;
   $('#nextDayBtn').onclick = async () => { await advance(1); };
 
@@ -2410,6 +2922,7 @@ const PATH_ENLARGE_TO = 0.12;
 function endPaths() {
   clearTimeout(App.pathTimer);
   App.pathTimer = null;
+  if (App.pathView != null) leavePathView();
   App.circuits.spotlight(null);
 }
 
@@ -2471,6 +2984,11 @@ function playNight(before, s) {
  *  strong each is, solid core for the share that has consolidated. */
 function showPartPaths() {
   if (App.pathTimer) return;
+  if (App.pathView != null && App.mode === 'simulation'
+      && App.viewState === 'current') {
+    drawPathView();
+    return;
+  }
   const s = App.viewState;
   const part = App.mode === 'simulation' && READING.has(s)
     ? App.curFocus : null;
@@ -2500,7 +3018,13 @@ function animateResponse(ev) {
     }
   }
   App.circuits.cascade(edges, { stagger: 0.13, speed: 1.35 });
-  setTimeout(() => App.viewer.clearGlow(), 3200);
+  setTimeout(() => {
+    App.viewer.clearGlow();
+    if (App.mode === 'simulation' && App.viewState === 'current') {
+      for (const [p, g] of Object.entries(App.engGlow || {}))
+        setPartGlow(App.viewer, p, g);
+    }
+  }, 3200);
 }
 
 /* ======================================================================= */
@@ -2509,6 +3033,7 @@ function animateResponse(ev) {
 
 async function advance(days) {
   App.replayDay = null;
+  if (App.pathView != null) leavePathView();
   const before = { ...(App.state?.weights || {}) };
   const s = await API.advance(days);
   applyState(s);

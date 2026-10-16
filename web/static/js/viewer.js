@@ -20,6 +20,9 @@ import { decodeF32, decodeU32, decodeU8, decodeU16 } from './api.js';
 // it. Muting these with the rest left the brain looking cut off at the bottom.
 const SILHOUETTE = new Set(['cerebellum', 'brainstem']);
 const GHOST_GREY = new THREE.Color(0x8b9199);
+// How far a pale glow is washed toward white (0 = own colour, 1 = white).
+const PALE_MIX = 0.55;
+const PALE_WHITE = new THREE.Color(0xffffff);
 
 /* ------------------------------------------------------------------ shaders */
 
@@ -39,6 +42,8 @@ const CORTEX_VERT = /* glsl */`
   varying vec4  vNetCol;
   varying float vSel;
   varying float vSelFaint;
+  varying float vGlowGain;
+  varying float vPale;
   varying float vNetOn;
   varying float vHasNet;
   varying float vDepthFold;
@@ -55,6 +60,8 @@ const CORTEX_VERT = /* glsl */`
     vec4 sel = texture2D(uSelTex, vec2((aLabel + 0.5) / 32.0, 0.5));
     vSel = sel.r;
     vSelFaint = sel.g;
+    vGlowGain = sel.b * 2.0;
+    vPale = sel.a;
     vNetCol = texture2D(uNetTex, vec2((aNetwork + 0.5) / 8.0, 0.5));
     vNetOn = (uNetActive >= 0.0 && abs(aNetwork - uNetActive) < 0.5)
              ? 1.0 : 0.0;
@@ -88,6 +95,8 @@ const CORTEX_FRAG = /* glsl */`
   varying vec4  vNetCol;
   varying float vSel;
   varying float vSelFaint;
+  varying float vGlowGain;
+  varying float vPale;
   varying float vNetOn;
   varying float vHasNet;
   varying float vDepthFold;
@@ -108,6 +117,9 @@ const CORTEX_FRAG = /* glsl */`
   uniform sampler2D uSelTex;    // R = selected, G = selected but faint (another part has focus)
   uniform float uFaintGhost;    // 1 = faint parts go see-through too, keeping only a trace of colour
   uniform float uStrongGlow;    // 1 = glow is strong enough to read as a level, in the part's own colour
+  uniform float uLumRef;        // brightness of the reference hue (the ACC's yellow), as ec
+  uniform float uBoostK;        // boost size, set so the reference hue is unchanged
+  uniform float uCortexGain;    // cortex emission scale in strong glow
   uniform sampler2D uNetTex;    // RGB = Yeo network colour
   uniform float uNetMode;       // 1 = colour cortex by network, not by region
   uniform float uNetActive;     // highlighted network (-1 = none)
@@ -213,22 +225,37 @@ const CORTEX_FRAG = /* glsl */`
     // Lighting and tone mapping mute a tinted surface; lean it back toward
     // the flat swatch colour while keeping enough shading to read as tissue.
     if (trueCol) lit = mix(lit, rc * (0.50 + 0.40 * wrap), 0.78);
+    bool pale = isActive && vPale > 0.5 && uStrongGlow > 0.5;
+    // The swatch pull above is fully saturated; a pale part gives some back.
+    if (pale) lit = mix(lit, vec3(dot(lit, vec3(0.299, 0.587, 0.114))) * 1.15,
+                        ${PALE_MIX.toFixed(2)});
     // Self-illumination in the part's own colour, mirroring the structures'
     // emissive. Left unclamped so the bloom pass radiates it as a halo.
-    if (isActive && !faint) {
-      float eg = uStrongGlow > 0.5 ? glow : max(glow, 0.8);
-      // 0.6: the swatch pull above already lights cortex brighter than a structure's diffuse.
-      lit += rc * (0.38 + 0.6 * eg) * uHighlight * 0.6;
+    if (isActive && !faint && !pale) {
+      // Emit at full intensity of the hue, so darker swatches still reach the bloom threshold.
+      vec3 ec = rc / max(max(max(rc.r, rc.g), rc.b), 0.05);
+      if (uStrongGlow > 0.5) {
+        // The usual glow, plus a boost that grows with the square of
+        // involvement, so only the most involved parts get much of it.
+        // The whole of it is evened out so every hue reads as bright as the
+        // ACC's yellow, the reference (comp = 1 there).
+        float lum = dot(ec, vec3(0.2126, 0.7152, 0.0722));
+        float comp = clamp(uLumRef / max(lum, 0.05), 0.5, 2.5);
+        float s = clamp((glow - 0.12) / 0.5, 0.0, 1.0);
+        s *= s;
+        lit += ec * (0.38 + 0.6 * (glow + 0.3) + uBoostK * s * s)
+               * comp * vGlowGain * uHighlight * uCortexGain;
+      } else {
+        // 0.6: the swatch pull above already lights cortex brighter than a structure's diffuse.
+        lit += ec * (0.38 + 0.6 * max(glow, 0.8)) * uHighlight * 0.6;
+      }
     }
-    // After the swatch pull, or the flattening would swallow it. More
-    // involved = a deeper, richer shade of its own colour, haloed at the edges.
-    if (uStrongGlow > 0.5 && isActive && !faint) {
-      float k = clamp((glow - 0.12) / 0.6, 0.0, 1.0);
-      vec3 deep = rc * (1.0 - 0.45 * k);
-      float dl = dot(deep, vec3(0.299, 0.587, 0.114));
-      deep = max(mix(vec3(dl), deep, 1.0 + 0.5 * k), 0.0);
-      lit = mix(lit, deep * (0.75 + 0.35 * wrap), 0.3 + 0.5 * k);
-      lit += rc * glow * fres * 1.4;
+    // Pale glow: a weak emission in a washed-out tint of the part's colour,
+    // even while faint. reg.a is the glow before faint scaled it down.
+    if (pale) {
+      vec3 ec = rc / max(max(max(rc.r, rc.g), rc.b), 0.05);
+      lit += mix(ec, vec3(1.0), ${PALE_MIX.toFixed(2)}) * (0.10 + 1.6 * reg.a)
+             * uHighlight * uCortexGain;
     }
     if (faint) lit *= 0.62;
 
@@ -285,27 +312,49 @@ const CORTEX_FRAG = /* glsl */`
   }
 `;
 
+const _pinA = new THREE.Vector3(), _pinB = new THREE.Vector3();
+// Preset camera distance, and the fog density that looks right there.
+const VIEW_DIST = 330, FOG_DENSITY = 0.0011;
+// Glow value that takes the whole strong-glow boost (glow.md).
+const FULL_GLOW = 0.75;
+const ANATOMY_BLOOM = 0.20, SIM_BLOOM = 0.46;
+// Every part's strong glow is matched to this hue's brightness (the ACC).
+const GLOW_REF_COLOR = 0xfbbf24;
+const _refLum = () => {
+  const c = new THREE.Color(GLOW_REF_COLOR);
+  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+};
+// 0.7 keeps the ACC's own full glow exactly as it was before evening out.
+const STRUCT_BOOST = 0.7;
+const CORTEX_GLOW_GAIN = 0.6;
+// Measured on screen against the ACC at Highlight 65%: what colour alone
+// cannot even out - size, how much faces the camera, how deep it sits.
+// By part id; anything missing is 1. Range 0..2 (cortex stores it in a byte).
+const GLOW_GAIN = {
+  amygdala: 1.36, hippocampus: 0.91, sgacc: 1.23, caudate: 0.81,
+  accumbens: 1.35, thalamus: 0.64, vta: 1.55, brainstem: 1.04,
+  mPFC: 0.51, vmPFC: 1.08, OFC: 2.0, dlPFC: 0.52, vlPFC: 1.07,
+  dACC: 0.76, aINS: 0.69,
+};
+
 /* ------------------------------------------------------------------ colours */
 
-const _hsl = { h: 0, s: 0, l: 0 };
-const _deep = new THREE.Color();
 
 
 const REGION_COLORS = {
   0: 0x000000, 1: 0x22d3ee, 2: 0x8468c0, 3: 0x3b82f6, 4: 0x1d4ed8,
-  5: 0xfbbf24, 6: 0xf59e0b, 7: 0xa3a3a3, 8: 0x94a3b8, 9: 0xa8a29e,
-  10: 0x78716c,
+  5: 0xfbbf24, 6: 0xf59e0b, 7: 0xa78bfa, 8: 0x94a3b8, 9: 0xd0775f,
+  10: 0x3fae9a,
   // Self-referential regions, given their own colours so they stop being
   // swallowed by "parietal" or, worse, by "other" - which drew them in black.
   11: 0xf472b6,   // posterior cingulate
   12: 0xc084fc,   // precuneus
   13: 0x22c55e,   // temporoparietal junction
   14: 0x38bdf8,   // frontopolar cortex
-  // General anatomical coverage. Kept deliberately paler and cooler than
-  // the regions above, so the parts the simulation actually uses still
-  // read as the foreground.
-  15: 0xcbd5e1,   // premotor
-  16: 0xe2e8f0,   // somatosensory
+  // General anatomical coverage. Mid-tone like the rest of the palette, each
+  // a different hue from its neighbours so adjacent parcels can be told apart.
+  15: 0xd4a83a,   // premotor
+  16: 0x4f8fd1,   // somatosensory
   17: 0xa5b4fc,   // superior parietal lobule
   18: 0x818cf8,   // primary visual
   19: 0xf0abfc,   // primary auditory
@@ -405,7 +454,7 @@ export class Viewer {
     // Neutral charcoal, not navy. A blue background pushes a blue cast through
     // the fog and the rim light onto tissue that should read as pink-grey.
     s.background = new THREE.Color(0x16181d);
-    s.fog = new THREE.FogExp2(0x16181d, 0.0011);
+    s.fog = new THREE.FogExp2(0x16181d, FOG_DENSITY);
     this.scene = s;
     this.composer.passes[0].scene = s;
 
@@ -582,6 +631,9 @@ export class Viewer {
     this.regionTex.magFilter = THREE.NearestFilter;
     this.regionTex.minFilter = THREE.NearestFilter;
     this.regionTex.needsUpdate = true;
+    // The reference hue's brightness, worked out the way the shader sees it.
+    const ref = new THREE.Color(GLOW_REF_COLOR);
+    const refEcLum = _refLum() / Math.max(ref.r, ref.g, ref.b);
 
     // 8x1 texture: one texel per Yeo network, index 0 being unassigned.
     // Colours are taken from the scene payload where possible, so the legend
@@ -603,9 +655,11 @@ export class Viewer {
     this.networkTex.needsUpdate = true;
 
     // 32x1 membership mask: R = 255 when that label is part of the current
-    // selection. A single float uniform could only ever highlight one label,
+    // selection, G = selected but faint, B = per-part glow gain (0..2).
+    // A single float uniform could only ever highlight one label,
     // which made composite terms like "prefrontal cortex" unrepresentable.
     this.selData = new Uint8Array(32 * 4);
+    this._writeGlowGains();
     this.selTex = new THREE.DataTexture(this.selData, 32, 1, THREE.RGBAFormat);
     this.selTex.magFilter = THREE.NearestFilter;
     this.selTex.minFilter = THREE.NearestFilter;
@@ -635,6 +689,9 @@ export class Viewer {
       uSelTex:    { value: this.selTex },
       uFaintGhost: { value: 0.0 },
       uStrongGlow: { value: 0.0 },
+      uLumRef: { value: refEcLum },
+      uBoostK: { value: Math.min(1.6, Math.max(0.6, 0.6 / refEcLum)) },
+      uCortexGain: { value: CORTEX_GLOW_GAIN },
       uNetTex:    { value: this.networkTex },
       uNetMode:   { value: 0.0 },
       uNetActive: { value: -1.0 },
@@ -750,8 +807,14 @@ export class Viewer {
       side: THREE.FrontSide,
     });
     const m = new THREE.Mesh(this._geomFrom(enc, false), mat);
+    // Perceived brightness of the hue: at equal emission yellow (~0.57)
+    // outshines red-pink (~0.30). Strong glow scales every part to read as
+    // bright as the reference hue, the ACC's yellow (lumComp = 1 there).
+    const lum = 0.2126 * col.r + 0.7152 * col.g + 0.0722 * col.b;
     m.userData = { id: meta.id, kind: 'structure', baseColor: col.clone(),
-                   baseOpacity: meta.opacity ?? 1.0 };
+                   baseOpacity: meta.opacity ?? 1.0,
+                   lumComp: Math.min(2.5, Math.max(0.5,
+                     _refLum() / Math.max(lum, 0.02))) };
     m.renderOrder = 3;
     return m;
   }
@@ -769,11 +832,9 @@ export class Viewer {
       layer.appendChild(el);
       this.pins.set(s.id, {
         el, pos: new THREE.Vector3(...s.centroids[0]), meta: s,
-        scaffold: s.order > 35,     // unlabelled unless a filter names it
+        alt: s.centroids[1] ? new THREE.Vector3(...s.centroids[1]) : null,
       });
     }
-    // Cortex pins exist only for setPinFilter(); a label on every parcel
-    // would bury the brain.
     for (const r of this.sceneData.cortical_regions || []) {
       const c = r.centroids || [];
       if (!c.length) continue;
@@ -795,13 +856,36 @@ export class Viewer {
     this._pinFilter = ids ? new Set(ids) : null;
   }
 
+  /** The default pins when no filter is set, e.g. the atlas shortlist.
+   *  Null = every part. */
+  setPinScope(ids) {
+    this._pinScope = ids ? new Set(ids) : null;
+  }
+
   /** Short marks after a pin's name, e.g. { amygdala: '▲' }. Null clears. */
   setPinBadges(map) {
     for (const [id, pin] of this.pins) {
       const txt = pin.el.querySelector('.txt');
       const mark = map?.[id] || '';
       txt.textContent = pin.meta.short + (mark ? ` ${mark}` : '');
+      pin.w = 0;
     }
+  }
+
+  /** Which copy of a paired part to label: the shown hemisphere, or with
+   *  both shown, the one nearer the camera. */
+  _pinSide(pin) {
+    if (!pin.alt) return pin.pos;
+    if (this.hemi === 'L') return pin.alt;
+    if (this.hemi !== 'both') return pin.pos;
+    const cam = this.camera.position;
+    const dR = _pinA.copy(pin.pos).applyMatrix4(this.root.matrixWorld)
+      .distanceTo(cam);
+    const dL = _pinB.copy(pin.alt).applyMatrix4(this.root.matrixWorld)
+      .distanceTo(cam);
+    // A margin, so midline parts do not flip sides on every small turn.
+    if (pin.useAlt ? dR < dL - 3 : dL < dR - 3) pin.useAlt = !pin.useAlt;
+    return pin.useAlt ? pin.alt : pin.pos;
   }
 
   _updatePins() {
@@ -810,15 +894,18 @@ export class Viewer {
     const camPos = this.camera.position;
     const only = this._pinFilter;
     const [W, H] = this._dims();
+    const placed = [];
     for (const [id, pin] of this.pins) {
+      // A filter (a Simulation tab's parts) wins; otherwise the atlas scope.
+      const scope = only || this._pinScope;
+      const listed = scope ? scope.has(id) : true;
       const shown = pin.cortex
-        ? !!only?.has(id) && (this.hemi === 'L' ? !!this.cortexL?.visible
-                                                : !!this.cortexR?.visible)
-        : this.showSubcort && !!this.structures.get(id)?.visible
-          && (only ? only.has(id) : !pin.scaffold);
+        ? listed && (this.hemi === 'L' ? !!this.cortexL?.visible
+                                       : !!this.cortexR?.visible)
+        : this.showSubcort && !!this.structures.get(id)?.visible && listed;
       if (!this.showPins || !shown) { pin.el.style.display = 'none'; continue; }
       pin.el.style.display = '';
-      const pos = this.hemi === 'L' && pin.alt ? pin.alt : pin.pos;
+      const pos = this._pinSide(pin);
       v.copy(pos).applyMatrix4(this.root.matrixWorld).project(this.camera);
       const x = (v.x * 0.5 + 0.5) * W;
       const y = (-v.y * 0.5 + 0.5) * H;
@@ -830,7 +917,23 @@ export class Viewer {
       const faint = !!this._emph && (pin.cortex
         ? !this._emph.labels.has(pin.meta.label_index)
         : !this._emph.structs.has(id));
-      pin.el.classList.toggle('faded', faint || facing < -0.15 || v.z > 1);
+      const faded = faint || facing < -0.15 || v.z > 1;
+      pin.el.classList.toggle('faded', faded);
+      // Measured once; setPinBadges() clears it when the text changes.
+      if (!pin.w) { pin.w = pin.el.offsetWidth; pin.h = pin.el.offsetHeight; }
+      placed.push({ pin, x, y, faded, facing });
+    }
+
+    // Where labels collide, the one in front (or in focus) keeps its place.
+    placed.sort((a, b) => (a.faded - b.faded) || (b.facing - a.facing));
+    const kept = [];
+    const PAD = 2;
+    for (const p of placed) {
+      const r = { l: p.x - p.pin.w / 2 - PAD, r: p.x + p.pin.w / 2 + PAD,
+                  t: p.y - p.pin.h / 2 - PAD, b: p.y + p.pin.h / 2 + PAD };
+      const hit = kept.some(k => r.l < k.r && r.r > k.l && r.t < k.b && r.b > k.t);
+      p.pin.el.classList.toggle('crowded', hit);
+      if (!hit) kept.push(r);
     }
   }
 
@@ -848,7 +951,7 @@ export class Viewer {
     this._modeGhost = !anat;
     this._applyGhostState();
     this._styleStructures();
-    this.bloom.strength = anat ? 0.20 : 0.46;
+    this.bloom.strength = anat ? ANATOMY_BLOOM : SIM_BLOOM;
   }
 
   /**
@@ -990,6 +1093,8 @@ export class Viewer {
     // Measured: the insula is MORE visible without it.
 
     this.selData.fill(0);
+    this._writeGlowGains();
+    for (const m of this.structures.values()) m.userData.pale = false;
     for (const i of labels) {
       if (i >= 0 && i < 32) this.selData[i * 4] = 255;
     }
@@ -1008,6 +1113,17 @@ export class Viewer {
     this._selState = { structs, any, cortexOnly };
     this._applyGhostState();
     this._styleStructures();
+    if (this.mode === 'anatomy') this._anatomyGlow(labels, structs, any);
+  }
+
+  /** Anatomy selections get the full Visualise glow (see glow.md). */
+  _anatomyGlow(labels, structs, any) {
+    this.setStrongGlow(any);
+    this.clearGlow();
+    for (const i of labels) this.setRegionGlow(i, FULL_GLOW);
+    for (const id of structs) this.setStructureGlow(id, FULL_GLOW);
+    // Anatomy keeps a soft bloom so the bare specimen stays matte.
+    this.bloom.strength = any ? SIM_BLOOM : ANATOMY_BLOOM;
   }
 
   /**
@@ -1029,6 +1145,20 @@ export class Viewer {
       }
     }
     this.selTex.needsUpdate = true;
+    this._styleStructures();
+  }
+
+  /**
+   * Within the current selection, these parts glow pale: weaker, and in a
+   * washed-out tint of their own colour. Only drawn with strong glow on.
+   * selectMany() clears it.
+   */
+  setPale(labelIndices, structureIds) {
+    const labels = new Set(labelIndices || []);
+    const structs = new Set(structureIds || []);
+    for (let i = 0; i < 32; i++) this.selData[i * 4 + 3] = labels.has(i) ? 255 : 0;
+    this.selTex.needsUpdate = true;
+    for (const [id, m] of this.structures) m.userData.pale = structs.has(id);
     this._styleStructures();
   }
 
@@ -1073,8 +1203,10 @@ export class Viewer {
         : (SILHOUETTE.has(id) ? 0.16 : 0.03) * ga;
       const dim = modeOnly || (any && !on) || (glass && !on);
       const baseOp = meta.opacity ?? 1;
+      const pale = on && m.userData.pale && this._strongGlow;
       m.material.opacity = dim ? Math.min(1, baseOp * fade)
-        : faint ? baseOp * (this._seeThrough ? 0.06 : 0.25) : baseOp;
+        : faint ? baseOp * (this._seeThrough ? 0.06 : pale ? 0.4 : 0.25)
+        : baseOp;
       m.material.depthWrite = !dim && !faint;
       m.userData.pulse = on && !faint;
       m.userData.faint = faint;
@@ -1087,6 +1219,7 @@ export class Viewer {
         const mute = !on && glass && SILHOUETTE.has(id) ? 0.82 : 0.0;
         m.material.color.copy(base).lerp(GHOST_GREY, mute);
         m.material.emissive.copy(base).lerp(GHOST_GREY, mute);
+        if (pale) m.material.emissive.lerp(PALE_WHITE, PALE_MIX);
       }
     }
     for (const [id, pin] of this.pins) {
@@ -1111,6 +1244,25 @@ export class Viewer {
   /** Selected cortex shows its sidebar swatch colour instead of a tint. */
   setTrueColor(on) {
     this.cortexUniforms.uTrueColor.value = on ? 1.0 : 0.0;
+  }
+
+  /** Write GLOW_GAIN into the selection texture's blue channel. */
+  _writeGlowGains() {
+    const byLabel = {};
+    for (const r of this.sceneData?.cortical_regions || []) {
+      byLabel[r.label_index] = GLOW_GAIN[r.id] ?? 1;
+    }
+    for (let i = 0; i < 32; i++) {
+      this.selData[i * 4 + 2] = Math.round(
+        Math.min(2, byLabel[i] ?? 1) / 2 * 255);
+    }
+    if (this.selTex) this.selTex.needsUpdate = true;
+  }
+
+  /** Change one part's glow gain live; for tuning GLOW_GAIN by eye. */
+  setGlowGain(id, v) {
+    GLOW_GAIN[id] = v;
+    this._writeGlowGains();
   }
 
   /** Glow strongly enough that its strength reads as a level. */
@@ -1142,7 +1294,7 @@ export class Viewer {
 
   /* ------------------------------------------------------- view presets */
   setView(name, animate = true) {
-    const D = 330;
+    const D = VIEW_DIST;
     const V = {
       lateral:   [D * 0.92, D * 0.12, D * 0.30],
       medial:    [-D * 0.18, D * 0.10, D * 0.02],
@@ -1201,6 +1353,12 @@ export class Viewer {
     }
     this.cortexUniforms.uTime.value = t;
 
+    // Fog thickens with camera distance, so zooming out greyed the brain and
+    // sank its glow below the bloom threshold. Scale it to read the same as
+    // at the preset distance.
+    this.scene.fog.density = FOG_DENSITY * VIEW_DIST
+      / Math.max(1, this.camera.position.distanceTo(this.controls.target));
+
 
     // structure glow. Steady and in the structure's own colour: the pulse
     // and swelling read as white-hot flicker rather than as the part.
@@ -1214,24 +1372,22 @@ export class Viewer {
       // The appearance sliders must be applied here, not only where the
       // selection is styled: this loop rewrites emissiveIntensity every
       // frame and would otherwise pull it straight back to the default.
-      const strong = this._strongGlow && on && g > 0;
-      // A selection radiates at the chat-chip level unless glow encodes a level.
-      const sg = on && !this._strongGlow ? Math.max(g, 0.8) : g;
-      const want = on
-        ? (base + 0.22 + sg * (strong ? 1.2 : 0.6)) * hl
+      // A selection radiates at the chat-chip level. Strong glow keeps the
+      // usual glow and adds a hue-evened boost that grows with the square
+      // of involvement (g = 0.12 + 0.5 * sqrt(push), see main.js).
+      const push = Math.min(1, Math.max(0, (g - 0.12) / 0.5)) ** 2;
+      const pale = m.userData.pale && this._strongGlow
+        && (on || m.userData.faint);
+      const want = pale
+        ? (base + 0.06 + g * 1.4) * m.userData.lumComp * hl
+        : on && this._strongGlow
+        ? (base + 0.22 + (g + 0.3) * 0.6 + STRUCT_BOOST * push * push)
+          * m.userData.lumComp * (GLOW_GAIN[m.userData.id] ?? 1) * hl
+        : on ? (base + 0.22 + Math.max(g, 0.8) * 0.6) * hl
         : m.userData.faint ? base * (this._seeThrough ? 0.1 : 0.6) * hl
         : (base + g * 1.5) * (focusing ? ga : 1.0);
       m.material.emissiveIntensity +=
         (want - m.material.emissiveIntensity) * Math.min(1, dt * 8);
-      if (strong && m.userData.baseColor) {
-        // Deeper and richer with involvement, same hue.
-        const k = Math.min(1, Math.max(0, (g - 0.12) / 0.6));
-        m.userData.baseColor.getHSL(_hsl);
-        _deep.setHSL(_hsl.h, Math.min(1, _hsl.s * (1 + 0.5 * k)),
-                     _hsl.l * (1 - 0.4 * k));
-        m.material.color.copy(_deep);
-        m.material.emissive.copy(_deep);
-      }
       if (m.scale.x !== 1) {
         m.scale.lerp(new THREE.Vector3(1, 1, 1), Math.min(1, dt * 6));
       }
