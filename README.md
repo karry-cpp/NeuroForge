@@ -163,6 +163,11 @@ A model is used in two places: a chat panel that explains what you are looking
 at and can highlight regions while it answers, and the interpreter that reads
 a logged experience and works out which event it describes.
 
+For relevant chat questions, NeuroForge supplies its own region, pathway and
+simulation reference text, including how simulated progress is calculated.
+Unmatched questions are answered from the model's general knowledge. The
+simulation values are not measurements of the user's brain.
+
 For local models, there is no account and no API key. If LM Studio or Ollama is already running,
 NeuroForge finds it on its usual port and uses it &mdash; starting one of them
 is the entire setup.

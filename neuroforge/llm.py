@@ -41,6 +41,10 @@ import urllib.request
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from . import discover
+from .anatomy.structures import GROUPS
+from .atlas import PATHWAYS, Pathway
+from .events import EVENTS_BY_ID
+from .model import PROGRESS_REFERENCE
 
 # Hard cap on what we will echo back into a prompt. Prevents a huge pasted
 # journal entry from pushing the grounding text out of the context window.
@@ -90,25 +94,43 @@ Be concise. Short paragraphs. Do not pad."""
 # Retrieval
 # --------------------------------------------------------------------------
 
+_GENERIC_NAME_WORDS = {
+    "anterior", "posterior", "dorsal", "ventral", "medial", "lateral",
+    "superior", "inferior", "primary", "secondary", "nucleus",
+}
+
+
 def _aliases(rid: str, name: str, short: str) -> List[str]:
     """Surface forms a user might plausibly type for a region."""
     out = {rid.lower(), name.lower(), short.lower()}
     # "Dorsolateral prefrontal cortex" -> also match "dorsolateral"
-    first = name.split()[0].lower()
-    if len(first) > 5:
-        out.add(first)
+    words = name.split()
+    if (words and len(words[0]) > 5
+            and words[0].lower() not in _GENERIC_NAME_WORDS):
+        out.add(words[0].lower())
     return [a for a in out if len(a) >= 3]
+
+
+def _contains(query: str, term: str, prefix: bool = False) -> bool:
+    if not term:
+        return False
+    end = "" if prefix else r"(?!\w)"
+    return re.search(r"(?<!\w)" + re.escape(term) + end, query) is not None
+
+
+def _has_topic(query: str, hints: Tuple[str, ...]) -> bool:
+    return any(_contains(query, hint, prefix=True) for hint in hints)
 
 
 # Plain-language hooks. A user asks about "fear" or "habit", not "BLA".
 TOPIC_HINTS: Dict[str, Tuple[str, ...]] = {
     "amygdala": ("fear", "afraid", "threat", "panic", "scared", "alarm",
-                 "anxiety", "anxious"),
+                 "anxiety", "anxious", "angry", "anger", "furious"),
     "hippocampus": ("memory", "remember", "context", "recall", "forget"),
     "dlPFC": ("focus", "concentrate", "working memory", "distract", "goal"),
     "vlPFC": ("inhibit", "stop myself", "hold back", "restrain", "label",
               "name the emotion"),
-    "vmPFC": ("calm", "safety", "safe", "soothe", "value", "reappraise"),
+    "vmPFC": ("calm", "safety", "safe", "soothe", "value", "reapprais"),
     "dACC": ("conflict", "effort", "error", "notice", "monitor"),
     "sgACC": ("sad", "sadness", "low mood", "depress", "rumination",
               "ruminate", "spiral"),
@@ -131,12 +153,114 @@ def _score(query: str, rid: str, name: str, short: str) -> int:
     q = query.lower()
     score = 0
     for a in _aliases(rid, name, short):
-        if a in q:
+        if _contains(q, a):
             score += 10
     for hint in TOPIC_HINTS.get(rid, ()):
-        if hint in q:
+        if _contains(q, hint, prefix=True):
             score += 4
     return score
+
+
+def _group_scores(query: str, scene: Dict[str, Any],
+                  parts: List[Dict[str, Any]]) -> Dict[str, int]:
+    groups = {g["id"]: g for g in GROUPS}
+    groups.update({g["id"]: g for g in (scene.get("groups") or [])})
+    matches: List[Tuple[int, int, List[str]]] = []
+
+    def add(phrase: str, members: List[str]) -> None:
+        if not phrase or not members:
+            return
+        pattern = r"(?<!\w)" + re.escape(phrase.lower()) + r"(?!\w)"
+        for match in re.finditer(pattern, query):
+            matches.append((match.start(), match.end(), members))
+
+    for group in groups.values():
+        members = (list(group.get("regions") or [])
+                   + list(group.get("structures") or []))
+        for alias in {group["id"], group.get("name", ""), group.get("short", "")}:
+            add(alias, members)
+
+    striatum: List[str] = []
+    for gid in ("dorsal_striatum", "ventral_striatum"):
+        if gid in groups:
+            striatum.extend(groups[gid].get("structures") or [])
+    add("striatum", striatum)
+
+    for phrase in ("anterior cingulate", "posterior cingulate", "cingulate"):
+        members = [p["id"] for p in parts
+                   if _contains(p.get("name", "").lower(), phrase)]
+        add(phrase, members)
+
+    scores: Dict[str, int] = {}
+    for start, end, members in matches:
+        if any(other_start <= start and end <= other_end
+               and (other_start < start or end < other_end)
+               for other_start, other_end, _ in matches):
+            continue
+        for rid in members:
+            scores[rid] = 6
+    return scores
+
+
+def _event_reference(event_id: str) -> str:
+    event = EVENTS_BY_ID[event_id]
+    lines = [f"Science: {event.science}", f"Simulation: {event.rule}"]
+    if event.caveat:
+        lines.append(f"Caveat: {event.caveat}")
+    return "\n".join(lines)
+
+
+def _pathway_reference(pathway: Pathway) -> str:
+    return f"Science: {pathway.science}\nSimulation: {pathway.metaphor}"
+
+
+def _references(query: str) -> List[Tuple[str, str]]:
+    references: List[Tuple[str, str]] = []
+    if _has_topic(query, ("sleep", "slept", "insomnia")):
+        good_sleep = EVENTS_BY_ID["sleep_good"]
+        poor_sleep = EVENTS_BY_ID["sleep_poor"]
+        text = (f"Science: {good_sleep.science}\n"
+                f"Good sleep rule: {good_sleep.rule}\n"
+                f"Poor sleep rule: {poor_sleep.rule}\n"
+                f"Caveat: {good_sleep.caveat}")
+        references.append(("event: sleep and consolidation", text))
+    if _has_topic(query, ("reapprais", "refram")):
+        references.append(("event: reappraisal",
+                           _event_reference("reappraisal")))
+    if _has_topic(query, ("ruminat", "replaying", "overthink", "spiral")):
+        pathway = PATHWAYS["rumination"]
+        references.append((f"pathway: {pathway.label}",
+                           _pathway_reference(pathway)))
+    if _has_topic(query, ("habit", "routine")):
+        pathway = PATHWAYS["new_habit"]
+        references.append((f"pathway: {pathway.label}",
+                           _pathway_reference(pathway)))
+    if any(_contains(query, word)
+           for word in ("progress", "progressing", "progression")):
+        references.append(("concept: progress", PROGRESS_REFERENCE))
+    return references
+
+
+def retrieve(question: str, scene: Dict[str, Any]
+             ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str]]]:
+    """Select parts and references from the question sent to the model."""
+    parts = (list(scene.get("cortical_regions") or [])
+             + list(scene.get("structures") or []))
+    q = question.strip()[:MAX_QUESTION].lower()
+    group_scores = _group_scores(q, scene, parts)
+    scored: List[Tuple[bool, bool, int, Dict[str, Any]]] = []
+    for part in parts:
+        rid, name, short = part["id"], part.get("name", ""), part.get("short", "")
+        named = any(_contains(q, alias) for alias in _aliases(rid, name, short))
+        grouped = rid in group_scores
+        score = _score(q, rid, name, short) + group_scores.get(rid, 0)
+        if score > 0:
+            scored.append((named, grouped, score, part))
+    scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    group_size = sum(grouped for _, grouped, _, _ in scored)
+    named_outside_group = sum(named and not grouped for named, grouped, _, _ in scored)
+    limit = max(5, min(8, group_size + named_outside_group))
+    return [part for _, _, _, part in scored[:limit]], _references(q)
 
 
 def _fmt_knowledge(k: Any, budget: int) -> str:
@@ -180,47 +304,42 @@ def build_context(question: str, scene: Dict[str, Any],
     actually measure without a tokeniser. 7000 chars is roughly 1.7k tokens,
     which leaves a 9B model plenty of room to answer.
     """
-    regions = list(scene.get("cortical_regions") or [])
-    structs = list(scene.get("structures") or [])
-    every = regions + structs
-    valid_ids = [x["id"] for x in every]
+    if char_budget < 0:
+        raise ValueError("char_budget must be non-negative")
 
-    scored = []
-    for x in every:
-        s = _score(question, x["id"], x.get("name", ""), x.get("short", ""))
-        if s > 0:
-            scored.append((s, x))
-    scored.sort(key=lambda t: -t[0])
+    every = list(scene.get("cortical_regions") or []) + list(scene.get("structures") or [])
+    valid_ids = [x["id"] for x in every]
+    picked, knowledge = retrieve(question, scene)
 
     listing = ", ".join(f"{x['id']} ({x.get('name', '')})" for x in every)
     ids_line = f"Region IDs available for [[show:ID]]: {listing}\n"
 
-    # Nothing matched: give a short menu instead of a random sample, so the
-    # model can ask a sensible follow-up rather than guessing.
-    if not scored:
+    if not picked and not knowledge:
         ctx = ("No specific region matched the question; answer from general "
                "knowledge.\n" + ids_line)
         if state:
             ctx += "\n" + _fmt_state(state)
         return ctx[:char_budget], valid_ids
 
-    picked = scored[:5]
-    per = max(400, (char_budget - 1200) // max(1, len(picked)))
-
-    lines = [ids_line,
-             "REFERENCE TEXT from this app (written and reviewed by the "
-             "project; use it where relevant):\n"]
-    for _, x in picked:
-        lines.append(f"### {x['id']} — {x.get('name', '')}")
-        body = _fmt_knowledge(x.get("knowledge"), per)
-        if body:
-            lines.append(body)
-        lines.append("")
-
+    lines = [ids_line]
     if state:
         lines.append(_fmt_state(state))
-    if model:
-        lines.append(_fmt_edges(model, state, [x["id"] for _, x in picked]))
+    lines.append("REFERENCE TEXT from this app (written and reviewed by the "
+                 "project; use it where relevant):\n")
+    sections: List[Tuple[str, Any]] = [
+        (f"### {title}", text) for title, text in knowledge
+    ] + [
+        (f"### {part['id']} — {part.get('name', '')}", part.get("knowledge"))
+        for part in picked
+    ]
+    edges = _fmt_edges(model, state, [part["id"] for part in picked]) if model else ""
+    overhead = (len("\n".join(lines)) + sum(len(title) + 3 for title, _ in sections)
+                + len(edges) + 2)
+    per = max(0, (char_budget - overhead) // len(sections))
+    for title, body in sections:
+        lines.extend((title, _fmt_knowledge(body, per)[:per], ""))
+    if edges:
+        lines.append(edges)
 
     return "\n".join(lines)[:char_budget], valid_ids
 
@@ -229,10 +348,13 @@ def _fmt_state(state: Dict[str, Any]) -> str:
     """Current simulation numbers, labelled unambiguously as simulation."""
     pw = state.get("pathways") or {}
     rows = ", ".join(f"{k} {v:.2f}" for k, v in list(pw.items())[:8])
+    progress = state.get("progress")
+    progress_text = f", simulated progress {progress}" if progress is not None else ""
     return (
         "CURRENT SIMULATION STATE (these are model variables, NOT "
         "measurements of the user):\n"
-        f"day {state.get('day')}, simulated alignment {state.get('alignment')}, "
+        f"day {state.get('day')}, simulated alignment {state.get('alignment')}"
+        f"{progress_text}, "
         f"stress {state.get('stress')}, sleep {state.get('sleep')}\n"
         f"simulated pathway strengths: {rows}\n"
     )
@@ -284,7 +406,7 @@ def strip_markers(text: str) -> str:
 
 def asked_ids(question: str, scene: Dict[str, Any]) -> List[str]:
     """Parts the question itself names, in the order they appear."""
-    q = question.lower()
+    q = question.strip()[:MAX_QUESTION].lower()
     hits: List[Tuple[int, str]] = []
     seen = set()
     for x in (scene.get("cortical_regions") or []) + (scene.get("structures") or []):

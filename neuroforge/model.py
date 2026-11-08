@@ -296,6 +296,16 @@ def alignment(cm: Connectome, target: List[float] | None = None) -> float:
     return 1.0 - sum(abs(a - b) for a, b in zip(v, t)) / len(v)
 
 
+PROGRESS_REFERENCE = (
+    "Progress is the fraction of the initial gap to the selected target "
+    "that has been closed: 1 - (current distance / initial distance). "
+    "Distances are sums of absolute differences in simulated connection "
+    "weights. The result is clipped to -0.5 through 1, and is 1 when the "
+    "initial gap is zero. It is a simulation value, not a measurement of "
+    "the user's brain."
+)
+
+
 def progress(cm: Connectome, start_vector: List[float],
              target: List[float] | None = None) -> float:
     """0..1 'how much of the original gap has been closed'.
