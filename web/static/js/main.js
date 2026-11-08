@@ -2208,6 +2208,8 @@ const HORIZONS = [30, 90, 180];
 const pts = (x) => `${x >= 0 ? '+' : '\u2212'}${Math.abs(x * 100).toFixed(1)}`;
 const projKey = (s) => `${s.day}|${s.log_count}|${s.progress}|${s.alignment}`;
 const progWords = (x) => `${progressBand(x * 100)} (~${Math.round(x * 20) * 5}%)`;
+const projectionBand = (band) => band
+  ? `${(band[0] * 100).toFixed(1)}–${(band[1] * 100).toFixed(1)}%` : '';
 
 async function ensureProjection() {
   const k = projKey(App.state);
@@ -2309,6 +2311,9 @@ function pviewHtml() {
     .sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 4);
   const label = (id) => App.model.pathways.find(x => x.id === id)?.label || id;
   const toward = (x) => x.d * ((s.pathway_targets[x.id] ?? 0) - (s.pathways[x.id] ?? 0)) > 0;
+  const progressValue = (x) => `${progWords(x.progress)}${
+    x.progress_band ? `<small class="pv-range">10th–90th percentile ${
+      projectionBand(x.progress_band)}</small>` : ''}`;
   const rates = Object.entries(p.rates).sort((a, b) => b[1] - a[1]).slice(0, 5)
     .map(([id, r]) => `${escHtml(App.eventById[id]?.label || id)} ${perWeek(r)}`)
     .join(' \u00b7 ');
@@ -2317,18 +2322,22 @@ function pviewHtml() {
       seg('stop', 'Stop practising')}</div>
     <div class="cur-night-row"><span>Now</span><span>${progWords(s.progress)}</span></div>
     <div class="cur-night-row"><span>In ${v} days, keep this up</span>
-      <span>${progWords(keep.progress)}</span></div>
+      <span>${progressValue(keep)}</span></div>
     <div class="cur-night-row"><span>In ${v} days, practice stopped</span>
-      <span>${progWords(stop.progress)}</span></div>
+      <span>${progressValue(stop)}</span></div>
     ${moved.map(x => `
       <div class="cur-night-row"><span>${escHtml(label(x.id))}</span>
         <span class="${toward(x) ? 'pv-t' : 'pv-a'}">${x.d > 0 ? 'stronger'
           : 'weaker'} by ${Math.abs(x.d * 100).toFixed(1)} \u00b7 ${
-          toward(x) ? 'toward' : 'away from'} your aim</span></div>`).join('')}
+          toward(x) ? 'toward' : 'away from'} your aim${
+          at.pathway_bands?.[x.id] ? `<small class="pv-range">projected level ${
+            projectionBand(at.pathway_bands[x.id])}</small>` : ''}</span></div>`).join('')}
     <div class="hab-intro">Runs your habits a week (${rates}) through the same
       rules, on a copy - nothing is recorded. "Stop practising" keeps
       everything else and takes the practice out. Based on what was
-      ${p.basis}. One fixed draw of luck; real weeks vary more.</div>`;
+      ${p.basis}. The ranges are the 10th–90th percentiles across 24 seeded
+      model runs. They show model variability, not a confidence interval or
+      personal prediction.</div>`;
 }
 
 function pathViewEdges(moved) {

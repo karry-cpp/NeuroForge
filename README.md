@@ -59,6 +59,8 @@ through structures that are not drawn.
 
 **Simulation** — log a trigger, choose a response, watch simulated pathway
 strengths change. Scrub the timeline across day 1 / 7 / 30 / 90 / 180.
+Longer-term projections show seeded model-variability ranges, not personal
+predictions.
 
 One brain throughout, with a **Current / Target / Compare** toggle.
 

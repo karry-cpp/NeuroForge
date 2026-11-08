@@ -440,22 +440,25 @@ def replay(sim: Simulation, rate: Dict[str, float], days: int,
 HORIZONS = (30, 90, 180)
 # One fixed draw of luck, so the forecast only moves when the habits do.
 PROJECTION_SEED = 11
+PROJECTION_RUNS = 24
+PROJECTION_PERCENTILES = (0.10, 0.90)
 
 
-def _fork(sim: Simulation) -> Simulation:
+def _fork(sim: Simulation, seed: int = PROJECTION_SEED) -> Simulation:
     keep = sim.listeners, sim.history
     sim.listeners, sim.history = [], []
     try:
         clone = copy.deepcopy(sim)
     finally:
         sim.listeners, sim.history = keep
-    clone.rng = random.Random(PROJECTION_SEED)
+    clone.rng = random.Random(seed)
     return clone
 
 
-def _run(sim: Simulation, rate: Dict[str, float]) -> List[Dict[str, Any]]:
+def _run(sim: Simulation, rate: Dict[str, float],
+         seed: int = PROJECTION_SEED) -> List[Dict[str, Any]]:
     """Close today, then live `rate` out to each horizon."""
-    sim = _fork(sim)
+    sim = _fork(sim, seed)
     sim.advance_day()
     out = []
     done = 1
@@ -473,6 +476,36 @@ def _run(sim: Simulation, rate: Dict[str, float]) -> List[Dict[str, Any]]:
             "progress": round(sim.progress, 4),
         })
     return out
+
+
+def _percentile(values: List[float], percentile: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (
+        position - lower)
+
+
+def _run_with_bands(sim: Simulation,
+                    rate: Dict[str, float]) -> List[Dict[str, Any]]:
+    runs = [_run(sim, rate, PROJECTION_SEED + i)
+            for i in range(PROJECTION_RUNS)]
+    forecast = runs[0]
+    low, high = PROJECTION_PERCENTILES
+    for i, point in enumerate(forecast):
+        samples = [run[i] for run in runs]
+        point["progress_band"] = [
+            round(_percentile([s["progress"] for s in samples], q), 4)
+            for q in (low, high)]
+        point["pathway_bands"] = {
+            pathway: [
+                round(_percentile(
+                    [s["pathways"][pathway] for s in samples], q), 4)
+                for q in (low, high)]
+            for pathway in point["pathways"]
+        }
+    return forecast
 
 
 def projection(sim: Simulation) -> Dict[str, Any]:
@@ -493,12 +526,13 @@ def projection(sim: Simulation) -> Dict[str, Any]:
         return {"rates": {}, "keep": [], "stop": []}
     rest = {k: v for k, v in rate.items()
             if EVENTS_BY_ID[k].category != "Practice"}
-    keep = _run(sim, rate)
+    keep = _run_with_bands(sim, rate)
     return {
         "basis": "described and logged" if prof else "logged",
         "rates": {k: round(v, 2) for k, v in rate.items()},
         "keep": keep,
-        "stop": keep if len(rest) == len(rate) else _run(sim, rest),
+        "stop": (keep if len(rest) == len(rate)
+                 else _run_with_bands(sim, rest)),
     }
 
 

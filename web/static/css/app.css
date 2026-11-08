@@ -656,6 +656,7 @@ body.split #leftdock { display: none; }
 .pv-down { background: #ffb454; }
 .pv-t { color: #5eead4 !important; }
 .pv-a { color: #ffb454 !important; }
+.pv-range { display: block; font-size: 9px; color: var(--txt-faint); }
 .pr-row { padding: 6px 8px; margin: 0 -8px; border-radius: 8px; cursor: pointer;
           border: 1px solid transparent; }
 .pr-row:hover, .pr-row:focus-visible { background: var(--sel);

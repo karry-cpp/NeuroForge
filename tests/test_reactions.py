@@ -337,6 +337,13 @@ class TestChangeOverTime(unittest.TestCase):
             sim.advance_day()
         return sim
 
+    def _projection_rates(self, sim):
+        start = R.profile_rates(sim.profile.get("answers", {}),
+                                R.notes_of(sim.profile))
+        return {k: v for k, v in
+                R.habit_rates(start, sim.log, sim.day).items()
+                if v > 0 and k in EVENTS_BY_ID}
+
     def test_tally_counts_toward_and_away(self):
         rows = {r["pathway"]: r for r in self._practised().practice()}
         reg = rows["regulation"]
@@ -365,6 +372,40 @@ class TestChangeOverTime(unittest.TestCase):
         self.assertEqual([h["days"] for h in a["keep"]], list(R.HORIZONS))
         self.assertGreater(a["keep"][-1]["progress"],
                            a["stop"][-1]["progress"])
+
+    def test_projection_bands_are_deterministic_and_preserve_fixed_run(self):
+        sim = self._practised()
+        result = R.projection(sim)
+        expected = R._run(sim, self._projection_rates(sim))
+        has_progress_spread = False
+        has_pathway_spread = False
+        for projected, fixed in zip(result["keep"], expected):
+            self.assertEqual(projected["progress"], fixed["progress"])
+            self.assertEqual(projected["pathways"], fixed["pathways"])
+            lo, hi = projected["progress_band"]
+            self.assertLessEqual(lo, hi)
+            has_progress_spread |= lo < hi
+            self.assertEqual(set(projected["pathway_bands"]),
+                             set(projected["pathways"]))
+            for pathway, (low, high) in projected["pathway_bands"].items():
+                self.assertLessEqual(low, high)
+                self.assertGreaterEqual(low, 0.0)
+                self.assertLessEqual(high, 1.0)
+                has_pathway_spread |= low < high
+        self.assertTrue(has_progress_spread)
+        self.assertTrue(has_pathway_spread)
+        self.assertEqual(result, R.projection(sim))
+
+    def test_projection_scenarios_use_the_same_seeded_draws(self):
+        sim = self._practised()
+        rate = self._projection_rates(sim)
+        rest = {k: v for k, v in rate.items()
+                if EVENTS_BY_ID[k].category != "Practice"}
+        result = R.projection(sim)
+        expected = R._run(sim, rest)
+        for projected, fixed in zip(result["stop"], expected):
+            self.assertEqual(projected["progress"], fixed["progress"])
+            self.assertEqual(projected["pathways"], fixed["pathways"])
 
     def test_nothing_to_project_without_logs_or_profile(self):
         self.assertEqual(R.projection(Simulation(seed=0))["keep"], [])

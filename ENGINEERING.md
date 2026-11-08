@@ -321,6 +321,14 @@ seed** or they compare two sequences of luck rather than the thing under
 test (`test_spacing_beats_massing`, `test_sleep_matters`,
 `test_disuse_decays_but_consolidation_protects`).
 
+### Projection variability
+
+The Current tab keeps its original fixed-seed trajectory and reports the
+10th–90th percentiles from 24 seeded runs for progress and each pathway.
+Keep-practising and stop-practising runs use the same seeds so the comparison
+is not dominated by different draws of luck. These are ranges within this
+model, not confidence intervals or personal predictions.
+
 ---
 
 ## 7. Running and testing
